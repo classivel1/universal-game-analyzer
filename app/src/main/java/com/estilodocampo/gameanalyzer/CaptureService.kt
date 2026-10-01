@@ -40,6 +40,9 @@ class CaptureService : Service() {
     private var overlay: TextView? = null
     private var windowManager: WindowManager? = null
     private var lastFrame = 0L
+    private var waitingNextResult = false
+    private var resultPending = false
+    private val validations = ArrayDeque<Boolean>()
 
     override fun onCreate() {
         super.onCreate()
@@ -172,7 +175,7 @@ class CaptureService : Service() {
             }
         }, android.os.Handler(mainLooper))
 
-        showOverlay("COLETANDO\nCapturando tela…")
+        showOverlay("MODO VALIDAÇÃO\nColetando sem recomendar entrada.")
     }
 
     private fun showOverlay(text: String) {
@@ -208,6 +211,8 @@ class CaptureService : Service() {
                     private var startY = 0f
                     private var originX = 0
                     private var originY = 0
+                    private var downAt = 0L
+                    private var moved = false
 
                     override fun onTouch(
                         v: View,
@@ -219,6 +224,8 @@ class CaptureService : Service() {
                                 startY = event.rawY
                                 originX = params.x
                                 originY = params.y
+                                downAt = System.currentTimeMillis()
+                                moved = false
                             }
 
                             MotionEvent.ACTION_MOVE -> {
@@ -227,7 +234,15 @@ class CaptureService : Service() {
                                 params.y =
                                     originY + (event.rawY - startY).toInt()
 
+                                moved = kotlin.math.abs(event.rawX - startX) > 12 || kotlin.math.abs(event.rawY - startY) > 12
                                 windowManager?.updateViewLayout(v, params)
+                            }
+
+                            MotionEvent.ACTION_UP -> {
+                                if (resultPending && !moved) {
+                                    val held = System.currentTimeMillis() - downAt
+                                    recordValidation(held < 700)
+                                }
                             }
                         }
 
@@ -243,13 +258,63 @@ class CaptureService : Service() {
     }
 
     private fun updateOverlay(result: Analyzer.Result) {
+        if (resultPending) return
+
+        if (waitingNextResult) {
+            waitingNextResult = false
+            resultPending = true
+            showOverlay(
+                "RESULTADO DA HIPÓTESE\n" +
+                    "Toque rápido = FAVORÁVEL · Segure = DESFAVORÁVEL\n" +
+                    validationStats()
+            )
+            return
+        }
+
+        if (result.label == "SINAL HIPOTÉTICO") {
+            waitingNextResult = true
+            showOverlay(
+                "SINAL HIPOTÉTICO — SOMENTE VALIDAÇÃO\n" +
+                    "Similaridade ${result.score}/100 · " +
+                    "Contextos ${result.matches} · Rodadas ${result.rounds}\n" +
+                    "Observe o próximo resultado; não é recomendação de entrada."
+            )
+            return
+        }
+
         showOverlay(
             "${result.label}\n" +
-                "Evidência ${result.score}/100 · " +
-                "Contextos ${result.matches} · " +
-                "Rodadas ${result.rounds}\n" +
-                "Estado válido para o próximo giro"
+                "Similaridade ${result.score}/100 · " +
+                "Contextos ${result.matches} · Rodadas ${result.rounds}\n" +
+                validationStats()
         )
+    }
+
+    private fun recordValidation(favorable: Boolean) {
+        if (!resultPending) return
+        resultPending = false
+        validations.addLast(favorable)
+        while (validations.size > 100) validations.removeFirst()
+
+        val label = if (favorable) "FAVORÁVEL REGISTRADO" else "DESFAVORÁVEL REGISTRADO"
+        showOverlay(
+            "$label\n" +
+                validationStats() +
+                "\nContinuando a coleta."
+        )
+    }
+
+    private fun validationStats(): String {
+        if (validations.isEmpty()) return "Validações: 0"
+        val list = validations.toList()
+        val sample20 = list.takeLast(minOf(20, list.size))
+        val pct20 = sample20.count { it } * 100.0 / sample20.size
+        val base = "Validações: ${list.size} · últ. ${sample20.size}: ${"%.1f".format(pct20)}% favoráveis"
+
+        if (list.size < 50) return base
+        val sample50 = list.takeLast(minOf(50, list.size))
+        val pct50 = sample50.count { it } * 100.0 / sample50.size
+        return base + " · últ. ${sample50.size}: ${"%.1f".format(pct50)}%"
     }
 
     private fun updateNotification(result: Analyzer.Result) {
@@ -259,14 +324,14 @@ class CaptureService : Service() {
         manager.notify(
             NOTIF_ID,
             notification(
-                "${result.label} · Evidência ${result.score}/100"
+                "${result.label} · Similaridade ${result.score}/100"
             )
         )
     }
 
     private fun notification(text: String) =
         NotificationCompat.Builder(this, CHANNEL)
-            .setContentTitle("Game Analyzer")
+            .setContentTitle("Game Analyzer · validação")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setOngoing(true)
