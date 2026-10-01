@@ -244,10 +244,10 @@ class CaptureService : Service() {
 
     private fun updateOverlay(result: Analyzer.Result) {
         showOverlay(
-            "\${result.label}\n" +
-                "Score \${result.score}/100 · " +
-                "Contextos \${result.matches} · " +
-                "Rodadas \${result.rounds}"
+            "${result.label}\n" +
+                "Score ${result.score}/100 · " +
+                "Contextos ${result.matches} · " +
+                "Rodadas ${result.rounds}"
         )
     }
 
@@ -258,7 +258,7 @@ class CaptureService : Service() {
         manager.notify(
             NOTIF_ID,
             notification(
-                "\${result.label} · Score \${result.score}/100"
+                "${result.label} · Score ${result.score}/100"
             )
         )
     }
