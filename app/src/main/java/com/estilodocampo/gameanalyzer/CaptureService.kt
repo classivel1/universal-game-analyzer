@@ -172,7 +172,7 @@ class CaptureService : Service() {
             }
         }, android.os.Handler(mainLooper))
 
-        showOverlay("AGUARDE\nCapturando tela…")
+        showOverlay("COLETANDO\nCapturando tela…")
     }
 
     private fun showOverlay(text: String) {
@@ -245,9 +245,10 @@ class CaptureService : Service() {
     private fun updateOverlay(result: Analyzer.Result) {
         showOverlay(
             "${result.label}\n" +
-                "Score ${result.score}/100 · " +
+                "Evidência ${result.score}/100 · " +
                 "Contextos ${result.matches} · " +
-                "Rodadas ${result.rounds}"
+                "Rodadas ${result.rounds}\n" +
+                "Estado válido para o próximo giro"
         )
     }
 
@@ -258,7 +259,7 @@ class CaptureService : Service() {
         manager.notify(
             NOTIF_ID,
             notification(
-                "${result.label} · Score ${result.score}/100"
+                "${result.label} · Evidência ${result.score}/100"
             )
         )
     }
