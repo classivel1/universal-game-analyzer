@@ -8,7 +8,7 @@ Aplicativo Android para análise visual em tempo real usando a API oficial **Med
 - Perfis 3×5 e 5×6
 - Histórico visual por sessão
 - Comparação de contextos semelhantes
-- Estados: **AGUARDE / OBSERVANDO PADRÃO / PADRÃO OBSERVADO**
+- Estados: **COLETANDO / SEM EVIDÊNCIA / SINAL EM FORMAÇÃO / SINAL DE TESTE — PRÓXIMO GIRO**
 - Não toca automaticamente no botão do jogo
 
 ## Gerar o APK
@@ -27,3 +27,12 @@ Aplicativo Android para análise visual em tempo real usando a API oficial **Med
 6. Abra o jogo
 
 O score mede semelhança com situações anteriores e não garante o resultado da próxima rodada.
+
+
+## Como interpretar os estados
+- **COLETANDO**: os giros estão alimentando a análise.
+- **SEM EVIDÊNCIA**: o último resultado não formou um contexto repetitivo relevante.
+- **SINAL EM FORMAÇÃO**: o contexto atual começou a se parecer com situações anteriores.
+- **SINAL DE TESTE — PRÓXIMO GIRO**: o próximo giro é destacado como teste experimental com base em repetição visual histórica.
+
+O estado permanece na tela até o próximo resultado e é recalculado somente quando uma nova rodada termina.
