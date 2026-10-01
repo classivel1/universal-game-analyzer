@@ -68,13 +68,12 @@ class Analyzer(profileIndex: Int) {
             // - COLETANDO: ainda juntando contexto.
             // - SEM EVIDÊNCIA: histórico suficiente, mas sem repetição útil agora.
             // - SINAL EM FORMAÇÃO: contexto atual começa a se repetir.
-            // - SINAL DE TESTE — PRÓXIMO GIRO: repetição forte o bastante para destacar
-            //   o próximo giro como teste experimental. Não representa garantia de ganho.
+            // - SINAL HIPOTÉTICO: repetição visual forte o bastante para ser validada no resultado seguinte.\n            //   É apenas uma hipótese estatística; não é recomendação de aposta nem probabilidade de ganho.
             val score = min(100, 20 + near * 10 + min(history.size, 20))
 
             val label = when {
                 history.size < 5 -> "COLETANDO"
-                near >= 6 -> "SINAL DE TESTE — PRÓXIMO GIRO"
+                near >= 6 -> "SINAL HIPOTÉTICO"
                 near >= 3 -> "SINAL EM FORMAÇÃO"
                 else -> "SEM EVIDÊNCIA"
             }
