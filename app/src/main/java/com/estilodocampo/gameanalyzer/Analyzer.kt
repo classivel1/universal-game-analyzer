@@ -63,12 +63,20 @@ class Analyzer(profileIndex: Int) {
                 .sorted()
 
             val near = comparisons.take(10).count { it <= 1500 }
-            val score = min(100, 25 + near * 7 + min(history.size, 30))
+
+            // O estado exibido vale para o PRÓXIMO giro:
+            // - COLETANDO: ainda juntando contexto.
+            // - SEM EVIDÊNCIA: histórico suficiente, mas sem repetição útil agora.
+            // - SINAL EM FORMAÇÃO: contexto atual começa a se repetir.
+            // - SINAL DE TESTE — PRÓXIMO GIRO: repetição forte o bastante para destacar
+            //   o próximo giro como teste experimental. Não representa garantia de ganho.
+            val score = min(100, 20 + near * 10 + min(history.size, 20))
 
             val label = when {
-                near >= 6 -> "PADRÃO OBSERVADO"
-                near >= 3 -> "OBSERVANDO PADRÃO"
-                else -> "AGUARDE"
+                history.size < 5 -> "COLETANDO"
+                near >= 6 -> "SINAL DE TESTE — PRÓXIMO GIRO"
+                near >= 3 -> "SINAL EM FORMAÇÃO"
+                else -> "SEM EVIDÊNCIA"
             }
 
             result = Result(label, score, near, history.size)
