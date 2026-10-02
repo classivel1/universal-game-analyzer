@@ -30,19 +30,11 @@ jobs:
           path: ~/.android/debug.keystore
           key: aviator-analyzer-debug-keystore-v1
 
-      - name: Ensure stable debug signing key
+      - name: Require stable Android signing key
         run: |
-          mkdir -p ~/.android
           if [ ! -f ~/.android/debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore ~/.android/debug.keystore \
-              -storepass android \
-              -alias androiddebugkey \
-              -keypass android \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -keyalg RSA \
-              -keysize 2048 \
-              -validity 10000
+            echo "Signing key cache missing. Refusing to publish an APK with a new signature."
+            exit 1
           fi
 
       - uses: gradle/actions/setup-gradle@v4
