@@ -40,3 +40,7 @@ Durante o voo, o overlay tenta ler também o multiplicador atual e mostra:
 - **SAIR AGORA — LIMITE ATINGIDO**
 
 Esse alvo é uma regra de gestão de risco baseada no histórico observado. Ele não prevê o ponto de crash nem garante que o avião chegará ao alvo.
+
+
+## Atualizações
+As versões atuais usam uma assinatura estável explícita no pipeline de build para permitir atualização por cima da instalação existente. Instalações antigas assinadas antes dessa configuração podem exigir uma reinstalação única.
