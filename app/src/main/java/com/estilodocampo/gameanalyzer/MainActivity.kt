@@ -21,6 +21,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var status: TextView
     private lateinit var spinner: Spinner
     private lateinit var projectionManager: MediaProjectionManager
+    private lateinit var updateManager: UpdateManager
 
     private val captureLauncher =
         registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
@@ -45,6 +46,14 @@ class MainActivity : AppCompatActivity() {
         projectionManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         status = findViewById(R.id.statusText)
         spinner = findViewById(R.id.profileSpinner)
+
+        updateManager = UpdateManager(
+            this,
+            status,
+            findViewById(R.id.updateButton)
+        )
+        updateManager.register()
+        updateManager.check(auto = true)
 
         spinner.adapter = ArrayAdapter(
             this,
@@ -87,5 +96,19 @@ class MainActivity : AppCompatActivity() {
             })
             status.text = "Status: parado."
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        if (::updateManager.isInitialized) {
+            updateManager.onResume()
+        }
+    }
+
+    override fun onDestroy() {
+        if (::updateManager.isInitialized) {
+            updateManager.unregister()
+        }
+        super.onDestroy()
     }
 }
