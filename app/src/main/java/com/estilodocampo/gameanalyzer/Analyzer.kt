@@ -1,6 +1,7 @@
 package com.estilodocampo.gameanalyzer
 
 import android.graphics.Bitmap
+import android.graphics.Color
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
@@ -172,6 +173,8 @@ class Analyzer {
         }
 
         val crop = Bitmap.createBitmap(bitmap, x, y, w, h)
+        val looksLowBlue = containsLowMultiplierBlue(crop)
+
         val scaled = Bitmap.createScaledBitmap(
             crop,
             crop.width * 4,
@@ -191,8 +194,33 @@ class Analyzer {
                     .filter { it in 1.0..1000.0 }
                     .toList()
 
-                // Nessa pequena região deve existir no máximo o primeiro multiplicador.
-                callback(values.firstOrNull())
+                val direct = values.firstOrNull()
+
+                if (direct != null) {
+                    callback(direct)
+                    return@addOnSuccessListener
+                }
+
+                // Quando o botão Lobby cobre o algarismo inicial, o OCR às vezes
+                // retorna apenas ".43x" ou "43x". Se a cor detectada for a azul
+                // usada pelo Aviator para resultados abaixo de 2x, o inteiro só
+                // pode ser 1. Nesse caso recuperamos 1.xx sem inventar valor.
+                if (looksLowBlue) {
+                    val partialRegex =
+                        Regex("""(?:[\.,]?)(\d{2})\s*[xX]""")
+
+                    val decimals = partialRegex.find(text.text)
+                        ?.groupValues
+                        ?.getOrNull(1)
+                        ?.toIntOrNull()
+
+                    if (decimals != null) {
+                        callback(1.0 + decimals / 100.0)
+                        return@addOnSuccessListener
+                    }
+                }
+
+                callback(null)
             }
             .addOnFailureListener {
                 callback(null)
@@ -200,6 +228,43 @@ class Analyzer {
             .addOnCompleteListener {
                 scaled.recycle()
             }
+    }
+
+    private fun containsLowMultiplierBlue(bitmap: Bitmap): Boolean {
+        var bluePixels = 0
+        var sampled = 0
+        val hsv = FloatArray(3)
+
+        val stepX = max(2, bitmap.width / 80)
+        val stepY = max(2, bitmap.height / 40)
+
+        var y = 0
+        while (y < bitmap.height) {
+            var x = 0
+            while (x < bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                Color.colorToHSV(pixel, hsv)
+
+                val hue = hsv[0]
+                val saturation = hsv[1]
+                val value = hsv[2]
+
+                if (
+                    hue in 175f..225f &&
+                    saturation >= 0.35f &&
+                    value >= 0.35f
+                ) {
+                    bluePixels++
+                }
+
+                sampled++
+                x += stepX
+            }
+            y += stepY
+        }
+
+        if (sampled == 0) return false
+        return bluePixels >= 8
     }
 
     private fun applyHistory(values: List<Double>, complete: Boolean) {
