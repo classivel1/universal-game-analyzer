@@ -4,6 +4,8 @@ import android.graphics.Bitmap
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.math.max
+import kotlin.math.min
 import kotlin.math.sqrt
 
 class Analyzer {
@@ -20,22 +22,28 @@ class Analyzer {
         val over10Pct: Int,
         val lowStreak: Int,
         val volatility: String,
-        val last20: List<Double>
+        val last20: List<Double>,
+        val historyComplete: Boolean
     )
 
     private data class HistoryLine(
         val y: Int,
+        val x: Int,
+        val height: Int,
         val values: List<Double>
     )
 
-    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    private var busy = false
+    private val recognizer =
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val firstCellRecognizer =
+        TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
-    // Snapshot atual da grade expandida, em ordem: mais recente -> mais antigo.
+    private var busy = false
     private var visibleHistory: List<Double> = emptyList()
     private var lastSnapshotKey = ""
     private var currentRiskTarget = 1.30
     private var nextEntrySignal = false
+    private var historyComplete = false
 
     fun process(bitmap: Bitmap, onResult: (Result?) -> Unit) {
         if (busy) {
@@ -53,12 +61,12 @@ class Analyzer {
         val minX = (bitmap.width * 0.02).toInt()
         val maxX = (bitmap.width * 0.98).toInt()
         val minLiveHeight = (bitmap.height * 0.035).toInt().coerceAtLeast(24)
+        val regex = Regex("""(\d{1,3}[\.,]\d{1,2})\s*[xX]""")
 
         recognizer.process(image)
             .addOnSuccessListener { text ->
                 val historyLines = mutableListOf<HistoryLine>()
                 val liveCandidates = mutableListOf<Pair<Int, Double>>()
-                val regex = Regex("""(\d{1,3}[\.,]\d{1,2})\s*[xX]""")
 
                 for (block in text.textBlocks) {
                     for (line in block.lines) {
@@ -66,8 +74,6 @@ class Analyzer {
                         val cy = box.centerY()
                         val cx = box.centerX()
 
-                        // Importante: analisar line.text inteiro. Isso recupera melhor
-                        // o primeiro valor quando o botão "Lobby" cobre parte do texto.
                         if (cy in historyMinY..historyMaxY && cx in minX..maxX) {
                             val values = regex.findAll(line.text)
                                 .mapNotNull { match ->
@@ -82,6 +88,8 @@ class Analyzer {
                                 historyLines.add(
                                     HistoryLine(
                                         y = box.top,
+                                        x = box.left,
+                                        height = box.height(),
                                         values = values
                                     )
                                 )
@@ -102,48 +110,121 @@ class Analyzer {
                     }
                 }
 
-                val orderedHistory = historyLines
-                    .sortedBy { it.y }
-                    .flatMap { it.values }
+                val sortedLines = historyLines.sortedBy { it.y }
+                val live = liveCandidates.maxByOrNull { it.first }?.second
 
-                var historyChanged = false
-
-                if (orderedHistory.isNotEmpty()) {
-                    val snapshotKey = orderedHistory
-                        .take(64)
-                        .joinToString("|") { "%.2f".format(it) }
-
-                    if (lastSnapshotKey.isEmpty()) {
-                        visibleHistory = orderedHistory
-                        lastSnapshotKey = snapshotKey
-                        currentRiskTarget = calculateRiskTarget(visibleHistory)
-                        nextEntrySignal = calculateNextEntrySignal(visibleHistory)
-                    } else if (snapshotKey != lastSnapshotKey) {
-                        visibleHistory = orderedHistory
-                        lastSnapshotKey = snapshotKey
-                        currentRiskTarget = calculateRiskTarget(visibleHistory)
-                        nextEntrySignal = calculateNextEntrySignal(visibleHistory)
-                        historyChanged = true
-                    }
-                }
-
-                val live = liveCandidates
-                    .maxByOrNull { it.first }
-                    ?.second
-
-                if (visibleHistory.isEmpty() && live == null && !historyChanged) {
-                    onResult(null)
+                if (sortedLines.isEmpty()) {
+                    finish(onResult, if (visibleHistory.isEmpty() && live == null) null else buildResult(live))
                     return@addOnSuccessListener
                 }
 
-                onResult(buildResult(live))
+                val firstLine = sortedLines.first()
+                val orderedRecognized = sortedLines.flatMap { it.values }
+
+                // O botão "Lobby" cobre parcialmente o primeiro multiplicador.
+                // Se a primeira linha começar longe demais da borda esquerda,
+                // tentamos recuperar somente a primeira célula em alta resolução.
+                val firstLooksHidden =
+                    firstLine.x > (bitmap.width * 0.10).toInt()
+
+                if (firstLooksHidden) {
+                    recoverFirstCell(
+                        bitmap = bitmap,
+                        rowY = firstLine.y,
+                        rowHeight = firstLine.height,
+                        regex = regex
+                    ) { recovered ->
+                        val corrected =
+                            if (recovered != null) listOf(recovered) + orderedRecognized
+                            else orderedRecognized
+
+                        applyHistory(
+                            corrected,
+                            complete = recovered != null
+                        )
+                        finish(onResult, buildResult(live))
+                    }
+                } else {
+                    applyHistory(orderedRecognized, complete = true)
+                    finish(onResult, buildResult(live))
+                }
             }
             .addOnFailureListener {
-                onResult(null)
+                finish(onResult, null)
+            }
+    }
+
+    private fun recoverFirstCell(
+        bitmap: Bitmap,
+        rowY: Int,
+        rowHeight: Int,
+        regex: Regex,
+        callback: (Double?) -> Unit
+    ) {
+        val x = 0
+        val y = max(0, rowY - rowHeight)
+        val w = min((bitmap.width * 0.18).toInt().coerceAtLeast(120), bitmap.width)
+        val h = min((rowHeight * 3).coerceAtLeast(80), bitmap.height - y)
+
+        if (w <= 0 || h <= 0) {
+            callback(null)
+            return
+        }
+
+        val crop = Bitmap.createBitmap(bitmap, x, y, w, h)
+        val scaled = Bitmap.createScaledBitmap(
+            crop,
+            crop.width * 4,
+            crop.height * 4,
+            true
+        )
+        crop.recycle()
+
+        firstCellRecognizer.process(InputImage.fromBitmap(scaled, 0))
+            .addOnSuccessListener { text ->
+                val values = regex.findAll(text.text)
+                    .mapNotNull { match ->
+                        match.groupValues[1]
+                            .replace(',', '.')
+                            .toDoubleOrNull()
+                    }
+                    .filter { it in 1.0..1000.0 }
+                    .toList()
+
+                // Nessa pequena região deve existir no máximo o primeiro multiplicador.
+                callback(values.firstOrNull())
+            }
+            .addOnFailureListener {
+                callback(null)
             }
             .addOnCompleteListener {
-                busy = false
+                scaled.recycle()
             }
+    }
+
+    private fun applyHistory(values: List<Double>, complete: Boolean) {
+        if (values.isEmpty()) return
+
+        historyComplete = complete
+        val snapshotKey = values
+            .take(64)
+            .joinToString("|") { "%.2f".format(it) }
+
+        if (snapshotKey == lastSnapshotKey) return
+
+        visibleHistory = values
+        lastSnapshotKey = snapshotKey
+        currentRiskTarget = calculateRiskTarget(visibleHistory)
+        nextEntrySignal =
+            historyComplete && calculateNextEntrySignal(visibleHistory)
+    }
+
+    private fun finish(
+        onResult: (Result?) -> Unit,
+        result: Result?
+    ) {
+        busy = false
+        onResult(result)
     }
 
     private fun calculateRiskTarget(historyNewestFirst: List<Double>): Double {
@@ -189,8 +270,6 @@ class Analyzer {
         }
         val sd = sqrt(variance)
 
-        // Apenas filtro experimental para decidir se o app destaca a próxima rodada.
-        // Não é previsão do multiplicador nem garantia de resultado.
         return under2 <= 50 &&
             over3 >= 20 &&
             lowStreak <= 1 &&
@@ -225,6 +304,7 @@ class Analyzer {
         }
 
         val action = when {
+            !historyComplete -> "LEITURA PARCIAL — AGUARDE"
             live != null && live >= currentRiskTarget -> "SAIR AGORA"
             live != null && live >= currentRiskTarget - 0.10 -> "PREPARE-SE PARA SAIR"
             live != null -> "MANTER"
@@ -234,11 +314,11 @@ class Analyzer {
         }
 
         return Result(
-            latest = visibleHistory.firstOrNull(),
+            latest = if (historyComplete) visibleHistory.firstOrNull() else null,
             liveMultiplier = live,
             riskTarget = currentRiskTarget,
             action = action,
-            rounds = rounds,
+            rounds = rounds + if (historyComplete) 0 else 1,
             under2Pct = under2,
             over2Pct = over2,
             over3Pct = over3,
@@ -246,7 +326,8 @@ class Analyzer {
             over10Pct = over10,
             lowStreak = lowStreak,
             volatility = volatility,
-            last20 = sample
+            last20 = sample,
+            historyComplete = historyComplete
         )
     }
 
@@ -257,5 +338,6 @@ class Analyzer {
 
     fun close() {
         recognizer.close()
+        firstCellRecognizer.close()
     }
 }
