@@ -78,9 +78,9 @@ class CaptureService : Service() {
         projection = manager.getMediaProjection(resultCode, data)
 
         val metrics = resources.displayMetrics
-        val width = 540
+        val width = minOf(metrics.widthPixels, 1080).coerceAtLeast(720)
         val height = (width * metrics.heightPixels.toDouble() / metrics.widthPixels)
-            .toInt().coerceAtLeast(720)
+            .toInt().coerceAtLeast(960)
 
         reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
@@ -104,7 +104,7 @@ class CaptureService : Service() {
 
         reader?.setOnImageAvailableListener({ imageReader ->
             val now = System.currentTimeMillis()
-            if (now - lastFrame < 900) {
+            if (now - lastFrame < 650) {
                 imageReader.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
