@@ -35,6 +35,7 @@ class Analyzer {
     private var busy = false
     private var lastNewest: Double? = null
     private var currentRiskTarget = 1.30
+    private var nextEntrySignal = false
 
     fun process(bitmap: Bitmap, onResult: (Result?) -> Unit) {
         if (busy) {
@@ -104,6 +105,7 @@ class Analyzer {
                         history.add(newestReadable)
                         if (history.size > 500) history.removeAt(0)
                         currentRiskTarget = calculateRiskTarget()
+                        nextEntrySignal = calculateNextEntrySignal()
                         historyChanged = true
                     }
                 }
@@ -157,6 +159,33 @@ class Analyzer {
         }
     }
 
+    private fun calculateNextEntrySignal(): Boolean {
+        if (history.size < 10) return false
+
+        val sample = history.takeLast(20)
+        val under2 = percent(sample) { it < 2.0 }
+        val over3 = percent(sample) { it >= 3.0 }
+
+        var lowStreak = 0
+        for (v in history.asReversed()) {
+            if (v < 2.0) lowStreak++ else break
+        }
+
+        val clipped = sample.map { minOf(it, 20.0) }
+        val mean = clipped.average()
+        val variance = if (clipped.size < 2) 0.0 else
+            clipped.sumOf { (it - mean) * (it - mean) } / clipped.size
+        val sd = sqrt(variance)
+
+        // Filtro conservador para a PRÓXIMA rodada:
+        // exige histórico mínimo, evita sequência baixa longa e volatilidade alta.
+        // É um sinal experimental de gestão de risco, não previsão do crash.
+        return under2 <= 50 &&
+            over3 >= 20 &&
+            lowStreak <= 1 &&
+            sd < 5.0
+    }
+
     private fun buildResult(live: Double?): Result {
         val sample = history.takeLast(20)
         val rounds = history.size
@@ -189,11 +218,12 @@ class Analyzer {
         }
 
         val action = when {
-            live == null && rounds >= 5 -> "ENTRAR AGORA"
-            live == null -> "COLETANDO"
-            live >= currentRiskTarget -> "SAIR AGORA"
-            live >= currentRiskTarget - 0.10 -> "PREPARE-SE PARA SAIR"
-            else -> "MANTER"
+            live != null && live >= currentRiskTarget -> "SAIR AGORA"
+            live != null && live >= currentRiskTarget - 0.10 -> "PREPARE-SE PARA SAIR"
+            live != null -> "MANTER"
+            rounds < 10 -> "COLETANDO"
+            nextEntrySignal -> "ENTRAR NA PRÓXIMA RODADA"
+            else -> "NÃO ENTRAR NA PRÓXIMA"
         }
 
         return Result(
