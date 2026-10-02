@@ -32,7 +32,7 @@ class MainActivity : AppCompatActivity() {
                     putExtra(CaptureService.EXTRA_PROFILE, spinner.selectedItemPosition)
                 }
                 ContextCompat.startForegroundService(this, serviceIntent)
-                status.text = "Status: captura iniciada. Abra o jogo."
+                status.text = "Status: captura iniciada. Abra o Aviator."
             } else {
                 status.text = "Status: permissão de captura negada."
             }
@@ -49,7 +49,7 @@ class MainActivity : AppCompatActivity() {
         spinner.adapter = ArrayAdapter(
             this,
             android.R.layout.simple_spinner_dropdown_item,
-            listOf("Fortune Hook 3×5", "Genérico 3×5", "Genérico 5×6")
+            listOf("Aviator — leitura de multiplicadores")
         )
 
         if (Build.VERSION.SDK_INT >= 33) {
