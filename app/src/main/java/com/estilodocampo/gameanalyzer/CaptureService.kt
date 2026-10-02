@@ -28,7 +28,6 @@ class CaptureService : Service() {
         const val EXTRA_RESULT_CODE = "resultCode"
         const val EXTRA_DATA = "data"
         const val EXTRA_PROFILE = "profile"
-
         private const val CHANNEL = "capture"
         private const val NOTIF_ID = 9870
     }
@@ -40,9 +39,6 @@ class CaptureService : Service() {
     private var overlay: TextView? = null
     private var windowManager: WindowManager? = null
     private var lastFrame = 0L
-    private var waitingNextResult = false
-    private var resultPending = false
-    private val validations = ArrayDeque<Boolean>()
 
     override fun onCreate() {
         super.onCreate()
@@ -58,11 +54,7 @@ class CaptureService : Service() {
         }
 
         if (intent?.action == ACTION_START) {
-            val resultCode = intent.getIntExtra(
-                EXTRA_RESULT_CODE,
-                Activity.RESULT_CANCELED
-            )
-
+            val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
             val data = if (Build.VERSION.SDK_INT >= 33) {
                 intent.getParcelableExtra(EXTRA_DATA, Intent::class.java)
             } else {
@@ -70,58 +62,37 @@ class CaptureService : Service() {
                 intent.getParcelableExtra(EXTRA_DATA)
             }
 
-            val profile = intent.getIntExtra(EXTRA_PROFILE, 0)
-
-            startForeground(
-                NOTIF_ID,
-                notification("Iniciando captura…")
-            )
-
-            startCapture(resultCode, data, profile)
+            startForeground(NOTIF_ID, notification("Iniciando leitura do Aviator…"))
+            startCapture(resultCode, data)
         }
-
         return START_STICKY
     }
 
-    private fun startCapture(
-        resultCode: Int,
-        data: Intent?,
-        profile: Int
-    ) {
+    private fun startCapture(resultCode: Int, data: Intent?) {
         if (data == null) return
 
-        analyzer = Analyzer(profile)
+        analyzer?.close()
+        analyzer = Analyzer()
 
-        val manager =
-            getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-
+        val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = manager.getMediaProjection(resultCode, data)
 
         val metrics = resources.displayMetrics
         val width = 540
-        val height =
-            (width * metrics.heightPixels.toDouble() / metrics.widthPixels)
-                .toInt()
-                .coerceAtLeast(720)
+        val height = (width * metrics.heightPixels.toDouble() / metrics.widthPixels)
+            .toInt().coerceAtLeast(720)
 
-        reader = ImageReader.newInstance(
-            width,
-            height,
-            PixelFormat.RGBA_8888,
-            2
-        )
+        reader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
 
         projection?.registerCallback(
             object : MediaProjection.Callback() {
-                override fun onStop() {
-                    stopSelf()
-                }
+                override fun onStop() { stopSelf() }
             },
             android.os.Handler(mainLooper)
         )
 
         virtualDisplay = projection?.createVirtualDisplay(
-            "GameAnalyzer",
+            "AviatorAnalyzer",
             width,
             height,
             metrics.densityDpi,
@@ -133,17 +104,13 @@ class CaptureService : Service() {
 
         reader?.setOnImageAvailableListener({ imageReader ->
             val now = System.currentTimeMillis()
-
-            if (now - lastFrame < 450) {
+            if (now - lastFrame < 900) {
                 imageReader.acquireLatestImage()?.close()
                 return@setOnImageAvailableListener
             }
 
             lastFrame = now
-
-            val image =
-                imageReader.acquireLatestImage()
-                    ?: return@setOnImageAvailableListener
+            val image = imageReader.acquireLatestImage() ?: return@setOnImageAvailableListener
 
             try {
                 val plane = image.planes[0]
@@ -157,39 +124,41 @@ class CaptureService : Service() {
                     height,
                     Bitmap.Config.ARGB_8888
                 )
-
                 bitmap.copyPixelsFromBuffer(buffer)
 
-                val cropped =
-                    Bitmap.createBitmap(bitmap, 0, 0, width, height)
+                val cropped = Bitmap.createBitmap(bitmap, 0, 0, width, height)
 
-                analyzer?.process(cropped)?.let { analysis ->
-                    updateOverlay(analysis)
-                    updateNotification(analysis)
+                analyzer?.process(cropped) { result ->
+                    if (result != null) {
+                        updateOverlay(result)
+                        updateNotification(result)
+                    }
+                    runCatching { cropped.recycle() }
+                    runCatching { bitmap.recycle() }
                 }
-
-                bitmap.recycle()
-                cropped.recycle()
             } finally {
                 image.close()
             }
         }, android.os.Handler(mainLooper))
 
-        showOverlay("MODO VALIDAÇÃO\nColetando sem recomendar entrada.")
+        showOverlay(
+            "AVIATOR ANALYZER\n" +
+                "Lendo histórico de multiplicadores…\n" +
+                "Aguarde novas rodadas."
+        )
     }
 
     private fun showOverlay(text: String) {
         if (!Settings.canDrawOverlays(this)) return
 
         if (overlay == null) {
-            windowManager =
-                getSystemService(WINDOW_SERVICE) as WindowManager
+            windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
 
             overlay = TextView(this).apply {
                 setTextColor(android.graphics.Color.WHITE)
-                setBackgroundColor(0xCC111827.toInt())
-                textSize = 15f
-                setPadding(24, 16, 24, 16)
+                setBackgroundColor(0xDD111827.toInt())
+                textSize = 14f
+                setPadding(22, 14, 22, 14)
             }
 
             val params = WindowManager.LayoutParams(
@@ -211,41 +180,21 @@ class CaptureService : Service() {
                     private var startY = 0f
                     private var originX = 0
                     private var originY = 0
-                    private var downAt = 0L
-                    private var moved = false
 
-                    override fun onTouch(
-                        v: View,
-                        event: MotionEvent
-                    ): Boolean {
+                    override fun onTouch(v: View, event: MotionEvent): Boolean {
                         when (event.action) {
                             MotionEvent.ACTION_DOWN -> {
                                 startX = event.rawX
                                 startY = event.rawY
                                 originX = params.x
                                 originY = params.y
-                                downAt = System.currentTimeMillis()
-                                moved = false
                             }
-
                             MotionEvent.ACTION_MOVE -> {
-                                params.x =
-                                    originX + (event.rawX - startX).toInt()
-                                params.y =
-                                    originY + (event.rawY - startY).toInt()
-
-                                moved = kotlin.math.abs(event.rawX - startX) > 12 || kotlin.math.abs(event.rawY - startY) > 12
+                                params.x = originX + (event.rawX - startX).toInt()
+                                params.y = originY + (event.rawY - startY).toInt()
                                 windowManager?.updateViewLayout(v, params)
                             }
-
-                            MotionEvent.ACTION_UP -> {
-                                if (resultPending && !moved) {
-                                    val held = System.currentTimeMillis() - downAt
-                                    recordValidation(held < 700)
-                                }
-                            }
                         }
-
                         return true
                     }
                 }
@@ -258,80 +207,33 @@ class CaptureService : Service() {
     }
 
     private fun updateOverlay(result: Analyzer.Result) {
-        if (resultPending) return
-
-        if (waitingNextResult) {
-            waitingNextResult = false
-            resultPending = true
-            showOverlay(
-                "RESULTADO DA HIPÓTESE\n" +
-                    "Toque rápido = FAVORÁVEL · Segure = DESFAVORÁVEL\n" +
-                    validationStats()
-            )
-            return
-        }
-
-        if (result.label == "SINAL HIPOTÉTICO") {
-            waitingNextResult = true
-            showOverlay(
-                "SINAL HIPOTÉTICO — SOMENTE VALIDAÇÃO\n" +
-                    "Similaridade ${result.score}/100 · " +
-                    "Contextos ${result.matches} · Rodadas ${result.rounds}\n" +
-                    "Observe o próximo resultado; não é recomendação de entrada."
-            )
-            return
-        }
+        val last = "%.2f".format(result.latest)
+        val sampleSize = result.last20.size
 
         showOverlay(
-            "${result.label}\n" +
-                "Similaridade ${result.score}/100 · " +
-                "Contextos ${result.matches} · Rodadas ${result.rounds}\n" +
-                validationStats()
+            "AVIATOR · HISTÓRICO\n" +
+                "Último lido: ${last}x · Rodadas ${result.rounds}\n" +
+                "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}%\n" +
+                "3x+ ${result.over3Pct}% · 5x+ ${result.over5Pct}% · 10x+ ${result.over10Pct}%\n" +
+                "Sequência <2x: ${result.lowStreak} · Volatilidade: ${result.volatility}\n" +
+                "Estatística do histórico; não prevê a próxima rodada."
         )
-    }
-
-    private fun recordValidation(favorable: Boolean) {
-        if (!resultPending) return
-        resultPending = false
-        validations.addLast(favorable)
-        while (validations.size > 100) validations.removeFirst()
-
-        val label = if (favorable) "FAVORÁVEL REGISTRADO" else "DESFAVORÁVEL REGISTRADO"
-        showOverlay(
-            "$label\n" +
-                validationStats() +
-                "\nContinuando a coleta."
-        )
-    }
-
-    private fun validationStats(): String {
-        if (validations.isEmpty()) return "Validações: 0"
-        val list = validations.toList()
-        val sample20 = list.takeLast(minOf(20, list.size))
-        val pct20 = sample20.count { it } * 100.0 / sample20.size
-        val base = "Validações: ${list.size} · últ. ${sample20.size}: ${"%.1f".format(pct20)}% favoráveis"
-
-        if (list.size < 50) return base
-        val sample50 = list.takeLast(minOf(50, list.size))
-        val pct50 = sample50.count { it } * 100.0 / sample50.size
-        return base + " · últ. ${sample50.size}: ${"%.1f".format(pct50)}%"
     }
 
     private fun updateNotification(result: Analyzer.Result) {
-        val manager =
-            getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-
+        val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
         manager.notify(
             NOTIF_ID,
             notification(
-                "${result.label} · Similaridade ${result.score}/100"
+                "Rodadas ${result.rounds} · <2x ${result.under2Pct}% · " +
+                    "volatilidade ${result.volatility}"
             )
         )
     }
 
     private fun notification(text: String) =
         NotificationCompat.Builder(this, CHANNEL)
-            .setContentTitle("Game Analyzer · validação")
+            .setContentTitle("Aviator Analyzer")
             .setContentText(text)
             .setSmallIcon(android.R.drawable.ic_menu_view)
             .setOngoing(true)
@@ -340,13 +242,11 @@ class CaptureService : Service() {
 
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
-            val manager =
-                getSystemService(NOTIFICATION_SERVICE) as NotificationManager
-
+            val manager = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(
                 NotificationChannel(
                     CHANNEL,
-                    "Captura e análise",
+                    "Leitura do Aviator",
                     NotificationManager.IMPORTANCE_LOW
                 )
             )
@@ -357,11 +257,10 @@ class CaptureService : Service() {
         reader?.close()
         virtualDisplay?.release()
         projection?.stop()
+        analyzer?.close()
 
         overlay?.let {
-            runCatching {
-                windowManager?.removeView(it)
-            }
+            runCatching { windowManager?.removeView(it) }
         }
 
         super.onDestroy()
