@@ -1,15 +1,18 @@
 package com.estilodocampo.gameanalyzer
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Color
 import com.google.mlkit.vision.common.InputImage
 import com.google.mlkit.vision.text.TextRecognition
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.math.abs
+import kotlin.math.ln
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.sqrt
 
-class Analyzer {
+class Analyzer(context: Context) {
     data class Result(
         val latest: Double?,
         val liveMultiplier: Double?,
@@ -24,7 +27,14 @@ class Analyzer {
         val lowStreak: Int,
         val volatility: String,
         val last20: List<Double>,
-        val historyComplete: Boolean
+        val historyComplete: Boolean,
+        val decoderState: String,
+        val decoderTarget: Double,
+        val decoderMatches: Int,
+        val decoderHitRate: Int,
+        val decoderBaseline: Int,
+        val decoderLift: Int,
+        val decoderQuality: Int
     )
 
     private data class HistoryLine(
@@ -34,17 +44,48 @@ class Analyzer {
         val values: List<Double>
     )
 
+    private data class Candidate(
+        val distance: Double,
+        val nextOutcome: Double
+    )
+
+    private data class DecoderSignal(
+        val state: String,
+        val target: Double,
+        val matches: Int,
+        val hitRate: Int,
+        val baseline: Int,
+        val lift: Int,
+        val quality: Int
+    )
+
     private val recognizer =
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val firstCellRecognizer =
         TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
 
+    private val prefs =
+        context.getSharedPreferences("aviator_decoder_history", Context.MODE_PRIVATE)
+
     private var busy = false
     private var visibleHistory: List<Double> = emptyList()
+    private val persistentHistory = mutableListOf<Double>()
     private var lastSnapshotKey = ""
     private var currentRiskTarget = 1.30
-    private var nextEntrySignal = false
     private var historyComplete = false
+    private var decoderSignal = DecoderSignal(
+        state = "DECODIFICANDO",
+        target = 1.30,
+        matches = 0,
+        hitRate = 0,
+        baseline = 0,
+        lift = 0,
+        quality = 0
+    )
+
+    init {
+        loadPersistentHistory()
+    }
 
     fun process(bitmap: Bitmap, onResult: (Result?) -> Unit) {
         if (busy) {
@@ -115,16 +156,16 @@ class Analyzer {
                 val live = liveCandidates.maxByOrNull { it.first }?.second
 
                 if (sortedLines.isEmpty()) {
-                    finish(onResult, if (visibleHistory.isEmpty() && live == null) null else buildResult(live))
+                    finish(
+                        onResult,
+                        if (analysisHistory().isEmpty() && live == null) null
+                        else buildResult(live)
+                    )
                     return@addOnSuccessListener
                 }
 
                 val firstLine = sortedLines.first()
                 val orderedRecognized = sortedLines.flatMap { it.values }
-
-                // O botão "Lobby" cobre parcialmente o primeiro multiplicador.
-                // Se a primeira linha começar longe demais da borda esquerda,
-                // tentamos recuperar somente a primeira célula em alta resolução.
                 val firstLooksHidden =
                     firstLine.x > (bitmap.width * 0.10).toInt()
 
@@ -136,8 +177,11 @@ class Analyzer {
                         regex = regex
                     ) { recovered ->
                         val corrected =
-                            if (recovered != null) listOf(recovered) + orderedRecognized
-                            else orderedRecognized
+                            if (recovered != null) {
+                                listOf(recovered) + orderedRecognized
+                            } else {
+                                orderedRecognized
+                            }
 
                         applyHistory(
                             corrected,
@@ -195,16 +239,11 @@ class Analyzer {
                     .toList()
 
                 val direct = values.firstOrNull()
-
                 if (direct != null) {
                     callback(direct)
                     return@addOnSuccessListener
                 }
 
-                // Quando o botão Lobby cobre o algarismo inicial, o OCR às vezes
-                // retorna apenas ".43x" ou "43x". Se a cor detectada for a azul
-                // usada pelo Aviator para resultados abaixo de 2x, o inteiro só
-                // pode ser 1. Nesse caso recuperamos 1.xx sem inventar valor.
                 if (looksLowBlue) {
                     val partialRegex =
                         Regex("""(?:[\.,]?)(\d{2})\s*[xX]""")
@@ -245,14 +284,10 @@ class Analyzer {
                 val pixel = bitmap.getPixel(x, y)
                 Color.colorToHSV(pixel, hsv)
 
-                val hue = hsv[0]
-                val saturation = hsv[1]
-                val value = hsv[2]
-
                 if (
-                    hue in 175f..225f &&
-                    saturation >= 0.35f &&
-                    value >= 0.35f
+                    hsv[0] in 175f..225f &&
+                    hsv[1] >= 0.35f &&
+                    hsv[2] >= 0.35f
                 ) {
                     bluePixels++
                 }
@@ -271,6 +306,7 @@ class Analyzer {
         if (values.isEmpty()) return
 
         historyComplete = complete
+
         val snapshotKey = values
             .take(64)
             .joinToString("|") { "%.2f".format(it) }
@@ -279,17 +315,287 @@ class Analyzer {
 
         visibleHistory = values
         lastSnapshotKey = snapshotKey
-        currentRiskTarget = calculateRiskTarget(visibleHistory)
-        nextEntrySignal =
-            historyComplete && calculateNextEntrySignal(visibleHistory)
+
+        if (complete) {
+            mergePersistentHistory(values)
+        }
+
+        val history = analysisHistory()
+        decoderSignal = decodeSignal(history)
+
+        currentRiskTarget = when {
+            decoderSignal.state == "SINAL FORTE" -> decoderSignal.target
+            decoderSignal.state == "SINAL MODERADO" -> decoderSignal.target
+            else -> calculateRiskTarget(history)
+        }
     }
 
-    private fun finish(
-        onResult: (Result?) -> Unit,
-        result: Result?
-    ) {
-        busy = false
-        onResult(result)
+    private fun mergePersistentHistory(snapshot: List<Double>) {
+        if (snapshot.isEmpty()) return
+
+        if (persistentHistory.isEmpty()) {
+            persistentHistory.addAll(snapshot.take(120))
+            savePersistentHistory()
+            return
+        }
+
+        val maxSearch = minOf(12, snapshot.size)
+        var overlapStart = -1
+
+        for (i in 0 until maxSearch) {
+            if (!near(snapshot[i], persistentHistory[0])) continue
+
+            var verified = 0
+            val verifyCount =
+                minOf(4, snapshot.size - i, persistentHistory.size)
+
+            for (j in 0 until verifyCount) {
+                if (near(snapshot[i + j], persistentHistory[j])) {
+                    verified++
+                }
+            }
+
+            if (verified >= minOf(3, verifyCount)) {
+                overlapStart = i
+                break
+            }
+        }
+
+        if (overlapStart == 0) return
+
+        if (overlapStart > 0) {
+            val merged =
+                snapshot.take(overlapStart) + persistentHistory
+
+            persistentHistory.clear()
+            persistentHistory.addAll(merged.take(1000))
+            savePersistentHistory()
+            return
+        }
+
+        // Se não há sobreposição verificável, não misturamos séries diferentes.
+        // Mantemos o histórico persistido e usamos a grade visível apenas para OCR.
+    }
+
+    private fun analysisHistory(): List<Double> {
+        return if (persistentHistory.size >= visibleHistory.size) {
+            persistentHistory
+        } else {
+            visibleHistory
+        }
+    }
+
+    private fun loadPersistentHistory() {
+        val raw = prefs.getString("history", "") ?: ""
+        if (raw.isBlank()) return
+
+        persistentHistory.clear()
+        persistentHistory.addAll(
+            raw.split(';')
+                .mapNotNull { it.toDoubleOrNull() }
+                .filter { it in 1.0..1000.0 }
+                .take(1000)
+        )
+    }
+
+    private fun savePersistentHistory() {
+        prefs.edit()
+            .putString(
+                "history",
+                persistentHistory
+                    .take(1000)
+                    .joinToString(";") { it.toString() }
+            )
+            .apply()
+    }
+
+    private fun decodeSignal(historyNewestFirst: List<Double>): DecoderSignal {
+        if (historyNewestFirst.size < 30) {
+            return DecoderSignal(
+                state = "DECODIFICANDO",
+                target = 1.30,
+                matches = 0,
+                hitRate = 0,
+                baseline = 0,
+                lift = 0,
+                quality = minOf(45, historyNewestFirst.size)
+            )
+        }
+
+        val contextSize = 4
+        val current = historyNewestFirst.take(contextSize)
+        val candidates = mutableListOf<Candidate>()
+        val maxOffset = minOf(historyNewestFirst.size - contextSize, 400)
+
+        for (offset in 1 until maxOffset) {
+            val pastContext =
+                historyNewestFirst.subList(offset, offset + contextSize)
+
+            val distance = contextDistance(current, pastContext)
+
+            if (distance <= 3.20) {
+                candidates.add(
+                    Candidate(
+                        distance = distance,
+                        nextOutcome = historyNewestFirst[offset - 1]
+                    )
+                )
+            }
+        }
+
+        val selected = candidates
+            .sortedBy { it.distance }
+            .take(18)
+
+        if (selected.size < 6) {
+            return DecoderSignal(
+                state = "SEM SINAL",
+                target = calculateRiskTarget(historyNewestFirst),
+                matches = selected.size,
+                hitRate = 0,
+                baseline = 0,
+                lift = 0,
+                quality = minOf(55, selected.size * 8)
+            )
+        }
+
+        val baselineSample =
+            historyNewestFirst.drop(contextSize).take(250)
+
+        val targets = listOf(1.30, 1.40, 1.50, 1.70, 2.00)
+        var best: DecoderSignal? = null
+        var bestScore = Double.NEGATIVE_INFINITY
+
+        for (target in targets) {
+            val hits =
+                selected.count { it.nextOutcome >= target }
+
+            val hitRate =
+                ((hits * 100.0) / selected.size).toInt()
+
+            val baseline =
+                percent(baselineSample) { it >= target }
+
+            val lift = hitRate - baseline
+            val lower = wilsonLower(hits, selected.size)
+            val breakEven = 1.0 / target
+
+            val similarity =
+                selected.map { it.distance }.average()
+
+            val quality = (
+                minOf(45.0, selected.size * 3.0) +
+                    maxOf(0.0, 28.0 - similarity * 7.0) +
+                    minOf(27.0, maxOf(0, lift) * 1.5)
+                ).toInt().coerceIn(0, 100)
+
+            val score =
+                (lower * target - 1.0) * 100.0 +
+                    lift * 0.35 +
+                    quality * 0.08
+
+            val state = when {
+                selected.size >= 10 &&
+                    lift >= 7 &&
+                    lower >= breakEven - 0.03 &&
+                    quality >= 62 -> "SINAL FORTE"
+
+                selected.size >= 8 &&
+                    lift >= 4 &&
+                    quality >= 50 -> "SINAL MODERADO"
+
+                else -> "SEM SINAL"
+            }
+
+            val signal = DecoderSignal(
+                state = state,
+                target = target,
+                matches = selected.size,
+                hitRate = hitRate,
+                baseline = baseline,
+                lift = lift,
+                quality = quality
+            )
+
+            if (
+                score > bestScore ||
+                (
+                    abs(score - bestScore) < 0.0001 &&
+                        (best == null || target < best!!.target)
+                    )
+            ) {
+                bestScore = score
+                best = signal
+            }
+        }
+
+        return best ?: DecoderSignal(
+            state = "SEM SINAL",
+            target = calculateRiskTarget(historyNewestFirst),
+            matches = selected.size,
+            hitRate = 0,
+            baseline = 0,
+            lift = 0,
+            quality = 0
+        )
+    }
+
+    private fun contextDistance(
+        current: List<Double>,
+        past: List<Double>
+    ): Double {
+        val weights = listOf(1.60, 1.30, 1.00, 0.80)
+        var total = 0.0
+
+        for (i in current.indices) {
+            val a = current[i]
+            val b = past[i]
+
+            val bucketGap =
+                abs(bucket(a) - bucket(b)).coerceAtMost(2)
+
+            val logGap =
+                abs(ln(minOf(a, 20.0)) - ln(minOf(b, 20.0)))
+
+            total +=
+                weights[i] * bucketGap * 0.72 +
+                    logGap * 0.28
+        }
+
+        return total
+    }
+
+    private fun bucket(value: Double): Int {
+        return when {
+            value < 1.30 -> 0
+            value < 2.00 -> 1
+            value < 3.00 -> 2
+            value < 5.00 -> 3
+            else -> 4
+        }
+    }
+
+    private fun wilsonLower(hits: Int, total: Int): Double {
+        if (total <= 0) return 0.0
+
+        val z = 1.64
+        val n = total.toDouble()
+        val p = hits / n
+        val z2 = z * z
+
+        val center = p + z2 / (2.0 * n)
+        val margin =
+            z * sqrt(
+                (p * (1.0 - p) + z2 / (4.0 * n)) / n
+            )
+        val denominator = 1.0 + z2 / n
+
+        return ((center - margin) / denominator)
+            .coerceIn(0.0, 1.0)
+    }
+
+    private fun near(a: Double, b: Double): Boolean {
+        return abs(a - b) < 0.005
     }
 
     private fun calculateRiskTarget(historyNewestFirst: List<Double>): Double {
@@ -318,32 +624,10 @@ class Analyzer {
         }
     }
 
-    private fun calculateNextEntrySignal(historyNewestFirst: List<Double>): Boolean {
-        if (historyNewestFirst.size < 10) return false
-
-        val sample = historyNewestFirst.take(20)
-        val under2 = percent(sample) { it < 2.0 }
-        val over3 = percent(sample) { it >= 3.0 }
-        val lowStreak = sample.takeWhile { it < 2.0 }.size
-
-        val clipped = sample.map { minOf(it, 20.0) }
-        val mean = clipped.average()
-        val variance = if (clipped.size < 2) {
-            0.0
-        } else {
-            clipped.sumOf { (it - mean) * (it - mean) } / clipped.size
-        }
-        val sd = sqrt(variance)
-
-        return under2 <= 50 &&
-            over3 >= 20 &&
-            lowStreak <= 1 &&
-            sd < 5.0
-    }
-
     private fun buildResult(live: Double?): Result {
-        val sample = visibleHistory.take(20)
-        val rounds = visibleHistory.size
+        val history = analysisHistory()
+        val sample = history.take(20)
+        val rounds = history.size
 
         val under2 = percent(sample) { it < 2.0 }
         val over2 = percent(sample) { it >= 2.0 }
@@ -370,20 +654,35 @@ class Analyzer {
 
         val action = when {
             !historyComplete -> "LEITURA PARCIAL — AGUARDE"
-            live != null && live >= currentRiskTarget -> "SAIR AGORA"
-            live != null && live >= currentRiskTarget - 0.10 -> "PREPARE-SE PARA SAIR"
-            live != null -> "MANTER"
-            rounds < 10 -> "COLETANDO"
-            nextEntrySignal -> "ENTRAR NA PRÓXIMA RODADA"
-            else -> "NÃO ENTRAR NA PRÓXIMA"
+
+            live != null && live >= currentRiskTarget ->
+                "SAIR AGORA"
+
+            live != null && live >= currentRiskTarget - 0.10 ->
+                "PREPARE-SE PARA SAIR"
+
+            live != null ->
+                "MANTER"
+
+            decoderSignal.state == "SINAL FORTE" ->
+                "ENTRADA EXPERIMENTAL — PRÓXIMA"
+
+            decoderSignal.state == "SINAL MODERADO" ->
+                "SINAL EM FORMAÇÃO"
+
+            decoderSignal.state == "DECODIFICANDO" ->
+                "DECODIFICANDO HISTÓRICO"
+
+            else ->
+                "SEM SINAL"
         }
 
         return Result(
-            latest = if (historyComplete) visibleHistory.firstOrNull() else null,
+            latest = if (historyComplete) history.firstOrNull() else null,
             liveMultiplier = live,
             riskTarget = currentRiskTarget,
             action = action,
-            rounds = rounds + if (historyComplete) 0 else 1,
+            rounds = rounds,
             under2Pct = under2,
             over2Pct = over2,
             over3Pct = over3,
@@ -392,11 +691,21 @@ class Analyzer {
             lowStreak = lowStreak,
             volatility = volatility,
             last20 = sample,
-            historyComplete = historyComplete
+            historyComplete = historyComplete,
+            decoderState = decoderSignal.state,
+            decoderTarget = decoderSignal.target,
+            decoderMatches = decoderSignal.matches,
+            decoderHitRate = decoderSignal.hitRate,
+            decoderBaseline = decoderSignal.baseline,
+            decoderLift = decoderSignal.lift,
+            decoderQuality = decoderSignal.quality
         )
     }
 
-    private fun percent(values: List<Double>, predicate: (Double) -> Boolean): Int {
+    private fun percent(
+        values: List<Double>,
+        predicate: (Double) -> Boolean
+    ): Int {
         if (values.isEmpty()) return 0
         return ((values.count(predicate) * 100.0) / values.size).toInt()
     }
