@@ -125,8 +125,18 @@ class UpdateManager(
                     }
                 }
 
+                val packageInfo =
+                    activity.packageManager.getPackageInfo(activity.packageName, 0)
+                val currentCode =
+                    if (Build.VERSION.SDK_INT >= 28) {
+                        packageInfo.longVersionCode.toInt()
+                    } else {
+                        @Suppress("DEPRECATION")
+                        packageInfo.versionCode
+                    }
+
                 val available =
-                    remoteCode > BuildConfig.VERSION_CODE &&
+                    remoteCode > currentCode &&
                         !apkUrl.isNullOrBlank()
 
                 activity.runOnUiThread {
