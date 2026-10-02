@@ -1,19 +1,17 @@
 package com.estilodocampo.gameanalyzer
 
 import android.app.Activity
-import android.app.DownloadManager
-import android.content.BroadcastReceiver
-import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
-import android.os.Environment
 import android.provider.Settings
 import android.view.View
 import android.widget.Button
 import android.widget.TextView
+import androidx.core.content.FileProvider
 import org.json.JSONObject
+import java.io.File
+import java.io.FileOutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 
@@ -22,72 +20,30 @@ class UpdateManager(
     private val status: TextView,
     private val button: Button
 ) {
-    private val downloadManager =
-        activity.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
-
-    private var downloadId = -1L
-    private var pendingApkUri: Uri? = null
-    private var receiverRegistered = false
-
-    private val receiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context?, intent: Intent?) {
-            val id = intent?.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1L) ?: -1L
-            if (id != downloadId) return
-
-            pendingApkUri = downloadManager.getUriForDownloadedFile(downloadId)
-            button.isEnabled = true
-
-            if (pendingApkUri == null) {
-                status.text = "Status: falha ao baixar atualização."
-                button.text = "Verificar atualização"
-                button.setOnClickListener { check(false) }
-                return
-            }
-
-            status.text = "Status: atualização baixada. Abrindo instalador…"
-            installPendingUpdate()
-        }
-    }
+    private var pendingFile: File? = null
+    @Volatile private var downloading = false
 
     init {
         button.setOnClickListener { check(false) }
     }
 
-    fun register() {
-        if (receiverRegistered) return
+    fun register() = Unit
 
-        val filter = IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE)
-        if (Build.VERSION.SDK_INT >= 33) {
-            activity.registerReceiver(
-                receiver,
-                filter,
-                Context.RECEIVER_NOT_EXPORTED
-            )
-        } else {
-            @Suppress("DEPRECATION")
-            activity.registerReceiver(receiver, filter)
-        }
-
-        receiverRegistered = true
-    }
-
-    fun unregister() {
-        if (!receiverRegistered) return
-        runCatching { activity.unregisterReceiver(receiver) }
-        receiverRegistered = false
-    }
+    fun unregister() = Unit
 
     fun onResume() {
-        val uri = pendingApkUri ?: return
+        val file = pendingFile ?: return
         if (
             Build.VERSION.SDK_INT < Build.VERSION_CODES.O ||
             activity.packageManager.canRequestPackageInstalls()
         ) {
-            installApk(uri)
+            installApk(file)
         }
     }
 
     fun check(auto: Boolean) {
+        if (downloading) return
+
         if (!auto) {
             status.text = "Status: verificando atualização…"
             button.isEnabled = false
@@ -101,6 +57,7 @@ class UpdateManager(
 
                 connection.connectTimeout = 8000
                 connection.readTimeout = 8000
+                connection.instanceFollowRedirects = true
                 connection.setRequestProperty("User-Agent", "AviatorAnalyzer-Android")
                 connection.setRequestProperty("Accept", "application/vnd.github+json")
 
@@ -143,9 +100,8 @@ class UpdateManager(
                     button.isEnabled = true
 
                     if (available) {
-                        status.text =
-                            "Status: nova versão $tag disponível."
-                        button.text = "ATUALIZAR AGORA — $tag"
+                        status.text = "Status: nova versão " + tag + " disponível."
+                        button.text = "ATUALIZAR AGORA — " + tag
                         button.visibility = View.VISIBLE
                         button.setOnClickListener {
                             downloadUpdate(apkUrl!!, tag)
@@ -155,8 +111,7 @@ class UpdateManager(
                         button.setOnClickListener { check(false) }
 
                         if (!auto) {
-                            status.text =
-                                "Status: aplicativo já está atualizado."
+                            status.text = "Status: aplicativo já está atualizado."
                         }
                     }
                 }
@@ -167,8 +122,7 @@ class UpdateManager(
                     button.setOnClickListener { check(false) }
 
                     if (!auto) {
-                        status.text =
-                            "Status: não foi possível verificar atualização."
+                        status.text = "Status: não foi possível verificar atualização."
                     }
                 }
             }
@@ -176,47 +130,113 @@ class UpdateManager(
     }
 
     private fun downloadUpdate(url: String, tag: String) {
-        val request = DownloadManager.Request(Uri.parse(url))
-            .setTitle("Aviator Analyzer $tag")
-            .setDescription("Baixando atualização")
-            .setNotificationVisibility(
-                DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
-            )
-            .setDestinationInExternalFilesDir(
-                activity,
-                Environment.DIRECTORY_DOWNLOADS,
-                "aviator-analyzer-$tag.apk"
-            )
+        if (downloading) return
+        downloading = true
 
-        downloadId = downloadManager.enqueue(request)
-        status.text = "Status: baixando atualização $tag…"
-        button.text = "Baixando…"
+        status.text = "Status: iniciando download " + tag + "…"
+        button.text = "BAIXANDO… 0%"
         button.isEnabled = false
+
+        Thread {
+            try {
+                val dir = File(activity.cacheDir, "updates")
+                if (!dir.exists()) dir.mkdirs()
+
+                val file = File(dir, "aviator-analyzer-" + tag + ".apk")
+                if (file.exists()) file.delete()
+
+                val connection = URL(url).openConnection() as HttpURLConnection
+                connection.connectTimeout = 15000
+                connection.readTimeout = 30000
+                connection.instanceFollowRedirects = true
+                connection.setRequestProperty("User-Agent", "AviatorAnalyzer-Android")
+                connection.connect()
+
+                if (connection.responseCode !in 200..299) {
+                    throw IllegalStateException("HTTP " + connection.responseCode)
+                }
+
+                val total = connection.contentLengthLong
+                var downloaded = 0L
+                var lastPercent = -1
+
+                connection.inputStream.use { input ->
+                    FileOutputStream(file).use { output ->
+                        val buffer = ByteArray(64 * 1024)
+                        while (true) {
+                            val read = input.read(buffer)
+                            if (read <= 0) break
+
+                            output.write(buffer, 0, read)
+                            downloaded += read
+
+                            if (total > 0) {
+                                val percent = ((downloaded * 100L) / total).toInt()
+                                if (percent != lastPercent) {
+                                    lastPercent = percent
+                                    activity.runOnUiThread {
+                                        button.text = "BAIXANDO… " + percent + "%"
+                                        status.text = "Status: baixando atualização " + tag + "…"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if (!file.exists() || file.length() < 1_000_000L) {
+                    throw IllegalStateException("APK incompleto")
+                }
+
+                pendingFile = file
+                downloading = false
+
+                activity.runOnUiThread {
+                    button.text = "INSTALAR ATUALIZAÇÃO"
+                    button.isEnabled = true
+                    status.text = "Status: download concluído. Abrindo instalador…"
+                    installPendingUpdate()
+                }
+            } catch (e: Exception) {
+                downloading = false
+                activity.runOnUiThread {
+                    button.text = "TENTAR NOVAMENTE"
+                    button.isEnabled = true
+                    status.text = "Status: falha no download. Toque para tentar novamente."
+                    button.setOnClickListener { downloadUpdate(url, tag) }
+                }
+            }
+        }.start()
     }
 
     private fun installPendingUpdate() {
-        val uri = pendingApkUri ?: return
+        val file = pendingFile ?: return
 
         if (
             Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
             !activity.packageManager.canRequestPackageInstalls()
         ) {
-            status.text =
-                "Status: permita instalar apps deste aplicativo uma vez."
+            status.text = "Status: permita instalar apps deste aplicativo uma vez."
             activity.startActivity(
                 Intent(
                     Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
-                    Uri.parse("package:${activity.packageName}")
+                    Uri.parse("package:" + activity.packageName)
                 )
             )
             return
         }
 
-        installApk(uri)
+        installApk(file)
     }
 
-    private fun installApk(uri: Uri) {
+    private fun installApk(file: File) {
         runCatching {
+            val uri = FileProvider.getUriForFile(
+                activity,
+                activity.packageName + ".fileprovider",
+                file
+            )
+
             activity.startActivity(
                 Intent(Intent.ACTION_VIEW).apply {
                     setDataAndType(
@@ -228,8 +248,10 @@ class UpdateManager(
                 }
             )
         }.onFailure {
-            status.text =
-                "Status: não foi possível abrir o instalador da atualização."
+            status.text = "Status: não foi possível abrir o instalador."
+            button.text = "INSTALAR ATUALIZAÇÃO"
+            button.isEnabled = true
+            button.setOnClickListener { installPendingUpdate() }
         }
     }
 }
