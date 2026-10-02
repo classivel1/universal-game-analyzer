@@ -47,6 +47,10 @@ class MainActivity : AppCompatActivity() {
         status = findViewById(R.id.statusText)
         spinner = findViewById(R.id.profileSpinner)
 
+        val packageInfo = packageManager.getPackageInfo(packageName, 0)
+        findViewById<TextView>(R.id.versionText).text =
+            "Versão " + (packageInfo.versionName ?: "—")
+
         updateManager = UpdateManager(
             this,
             status,
@@ -55,11 +59,13 @@ class MainActivity : AppCompatActivity() {
         updateManager.register()
         updateManager.check(auto = true)
 
-        spinner.adapter = ArrayAdapter(
+        val profileAdapter = ArrayAdapter(
             this,
-            android.R.layout.simple_spinner_dropdown_item,
+            R.layout.spinner_item,
             listOf("Aviator — leitura de multiplicadores")
         )
+        profileAdapter.setDropDownViewResource(R.layout.spinner_item)
+        spinner.adapter = profileAdapter
 
         if (Build.VERSION.SDK_INT >= 33) {
             ActivityCompat.requestPermissions(
