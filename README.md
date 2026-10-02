@@ -1,38 +1,31 @@
-# Universal Game Analyzer — Android nativo
+# Aviator Analyzer — Android nativo
 
-Aplicativo Android para análise visual em tempo real usando a API oficial **MediaProjection** do Android.
+Aplicativo Android que usa **MediaProjection** para ler a tela do Aviator e extrair os multiplicadores visíveis com OCR.
 
-## Recursos
-- Captura autorizada da tela via MediaProjection
-- Overlay flutuante e arrastável
-- Perfis 3×5 e 5×6
-- Histórico visual por sessão
-- Comparação de contextos semelhantes
-- Estados: **COLETANDO / SEM EVIDÊNCIA / SINAL EM FORMAÇÃO / SINAL DE TESTE — PRÓXIMO GIRO**
-- Não toca automaticamente no botão do jogo
-
-## Gerar o APK
-1. Abra a aba **Actions**
-2. Entre em **Build Android APK**
-3. Toque em **Run workflow**
-4. Quando terminar, abra a execução e baixe o artefato **universal-game-analyzer-debug**
-5. Extraia o ZIP do artefato e instale o `app-debug.apk`
+## O que esta versão faz
+- Lê automaticamente os multiplicadores do histórico do Aviator
+- Mantém histórico local da sessão
+- Calcula, nas últimas rodadas:
+  - percentual abaixo de 2x
+  - percentual de 2x+, 3x+, 5x+ e 10x+
+  - sequência atual abaixo de 2x
+  - volatilidade observada
+- Exibe tudo em overlay flutuante e arrastável
+- Não toca no botão de aposta
+- Não trata histórico como previsão do próximo resultado
 
 ## Uso
-1. Abra o aplicativo
-2. Toque em **Permitir sobreposição**
-3. Escolha o perfil do jogo
-4. Toque em **Iniciar captura e análise**
-5. Autorize o compartilhamento/captura de tela do Android
-6. Abra o jogo
+1. Instale o APK
+2. Abra o **Aviator Analyzer**
+3. Permita sobreposição
+4. Inicie a leitura
+5. Autorize compartilhar a tela inteira
+6. Abra o Aviator e mantenha a faixa de histórico de multiplicadores visível
 
-O score mede semelhança com situações anteriores e não garante o resultado da próxima rodada.
+O OCR foi calibrado para a faixa superior do layout mostrado no vídeo de referência.
 
+## Gerar o APK
+Abra **Actions > Build Android APK** e baixe o artefato **universal-game-analyzer-debug** do build mais recente concluído com sucesso.
 
-## Como interpretar os estados
-- **COLETANDO**: os giros estão alimentando a análise.
-- **SEM EVIDÊNCIA**: o último resultado não formou um contexto repetitivo relevante.
-- **SINAL EM FORMAÇÃO**: o contexto atual começou a se parecer com situações anteriores.
-- **SINAL DE TESTE — PRÓXIMO GIRO**: o próximo giro é destacado como teste experimental com base em repetição visual histórica.
-
-O estado permanece na tela até o próximo resultado e é recalculado somente quando uma nova rodada termina.
+## Observação
+As porcentagens e sequências são estatísticas do histórico observado. Elas não garantem nem preveem o multiplicador da próxima rodada.
