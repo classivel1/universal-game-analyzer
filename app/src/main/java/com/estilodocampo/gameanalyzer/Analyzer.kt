@@ -23,17 +23,17 @@ class Analyzer {
         val last20: List<Double>
     )
 
-    private data class Candidate(
+    private data class HistoryLine(
         val y: Int,
-        val x: Int,
-        val height: Int,
-        val value: Double
+        val values: List<Double>
     )
 
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
-    private val history = mutableListOf<Double>()
     private var busy = false
-    private var lastNewest: Double? = null
+
+    // Snapshot atual da grade expandida, em ordem: mais recente -> mais antigo.
+    private var visibleHistory: List<Double> = emptyList()
+    private var lastSnapshotKey = ""
     private var currentRiskTarget = 1.30
     private var nextEntrySignal = false
 
@@ -48,73 +48,90 @@ class Analyzer {
 
         val historyMinY = (bitmap.height * 0.085).toInt()
         val historyMaxY = (bitmap.height * 0.40).toInt()
-        val liveMinY = (bitmap.height * 0.16).toInt()
+        val liveMinY = (bitmap.height * 0.40).toInt()
         val liveMaxY = (bitmap.height * 0.72).toInt()
         val minX = (bitmap.width * 0.02).toInt()
         val maxX = (bitmap.width * 0.98).toInt()
-        val minLiveHeight = (bitmap.height * 0.035).toInt().coerceAtLeast(28)
+        val minLiveHeight = (bitmap.height * 0.035).toInt().coerceAtLeast(24)
 
         recognizer.process(image)
             .addOnSuccessListener { text ->
-                val historyCandidates = mutableListOf<Candidate>()
-                val liveCandidates = mutableListOf<Candidate>()
+                val historyLines = mutableListOf<HistoryLine>()
+                val liveCandidates = mutableListOf<Pair<Int, Double>>()
                 val regex = Regex("""(\d{1,3}[\.,]\d{1,2})\s*[xX]""")
 
                 for (block in text.textBlocks) {
                     for (line in block.lines) {
-                        for (element in line.elements) {
-                            val box = element.boundingBox ?: continue
-                            val match = regex.find(element.text) ?: continue
-                            val raw = match.groupValues[1].replace(',', '.')
-                            val value = raw.toDoubleOrNull() ?: continue
-                            if (value < 1.0 || value > 1000.0) continue
+                        val box = line.boundingBox ?: continue
+                        val cy = box.centerY()
+                        val cx = box.centerX()
 
-                            val cy = box.centerY()
-                            val cx = box.centerX()
-                            val candidate = Candidate(
-                                y = box.top,
-                                x = box.left,
-                                height = box.height(),
-                                value = value
-                            )
+                        // Importante: analisar line.text inteiro. Isso recupera melhor
+                        // o primeiro valor quando o botão "Lobby" cobre parte do texto.
+                        if (cy in historyMinY..historyMaxY && cx in minX..maxX) {
+                            val values = regex.findAll(line.text)
+                                .mapNotNull { match ->
+                                    match.groupValues[1]
+                                        .replace(',', '.')
+                                        .toDoubleOrNull()
+                                }
+                                .filter { it in 1.0..1000.0 }
+                                .toList()
 
-                            if (cy in historyMinY..historyMaxY && cx in minX..maxX) {
-                                historyCandidates.add(candidate)
+                            if (values.isNotEmpty()) {
+                                historyLines.add(
+                                    HistoryLine(
+                                        y = box.top,
+                                        values = values
+                                    )
+                                )
                             }
+                        }
 
-                            if (cy in liveMinY..liveMaxY && box.height() >= minLiveHeight) {
-                                liveCandidates.add(candidate)
+                        if (cy in liveMinY..liveMaxY && box.height() >= minLiveHeight) {
+                            val liveValue = regex.find(line.text)
+                                ?.groupValues
+                                ?.getOrNull(1)
+                                ?.replace(',', '.')
+                                ?.toDoubleOrNull()
+
+                            if (liveValue != null && liveValue in 1.0..1000.0) {
+                                liveCandidates.add(box.height() to liveValue)
                             }
                         }
                     }
                 }
 
+                val orderedHistory = historyLines
+                    .sortedBy { it.y }
+                    .flatMap { it.values }
+
                 var historyChanged = false
 
-                if (historyCandidates.isNotEmpty()) {
-                    val ordered = historyCandidates
-                        .sortedWith(compareBy<Candidate> { it.y }.thenBy { it.x })
+                if (orderedHistory.isNotEmpty()) {
+                    val snapshotKey = orderedHistory
+                        .take(64)
+                        .joinToString("|") { "%.2f".format(it) }
 
-                    val newestReadable = ordered.first().value
-                    val previousNewest = lastNewest
-
-                    if (previousNewest == null) {
-                        lastNewest = newestReadable
-                    } else if (kotlin.math.abs(newestReadable - previousNewest) >= 0.005) {
-                        lastNewest = newestReadable
-                        history.add(newestReadable)
-                        if (history.size > 500) history.removeAt(0)
-                        currentRiskTarget = calculateRiskTarget()
-                        nextEntrySignal = calculateNextEntrySignal()
+                    if (lastSnapshotKey.isEmpty()) {
+                        visibleHistory = orderedHistory
+                        lastSnapshotKey = snapshotKey
+                        currentRiskTarget = calculateRiskTarget(visibleHistory)
+                        nextEntrySignal = calculateNextEntrySignal(visibleHistory)
+                    } else if (snapshotKey != lastSnapshotKey) {
+                        visibleHistory = orderedHistory
+                        lastSnapshotKey = snapshotKey
+                        currentRiskTarget = calculateRiskTarget(visibleHistory)
+                        nextEntrySignal = calculateNextEntrySignal(visibleHistory)
                         historyChanged = true
                     }
                 }
 
                 val live = liveCandidates
-                    .maxByOrNull { it.height }
-                    ?.value
+                    .maxByOrNull { it.first }
+                    ?.second
 
-                if (history.isEmpty() && live == null && !historyChanged) {
+                if (visibleHistory.isEmpty() && live == null && !historyChanged) {
                     onResult(null)
                     return@addOnSuccessListener
                 }
@@ -129,16 +146,12 @@ class Analyzer {
             }
     }
 
-    private fun calculateRiskTarget(): Double {
-        if (history.size < 5) return 1.30
+    private fun calculateRiskTarget(historyNewestFirst: List<Double>): Double {
+        if (historyNewestFirst.size < 10) return 1.30
 
-        val sample = history.takeLast(20)
+        val sample = historyNewestFirst.take(20)
         val under2 = percent(sample) { it < 2.0 }
-
-        var lowStreak = 0
-        for (v in history.asReversed()) {
-            if (v < 2.0) lowStreak++ else break
-        }
+        val lowStreak = sample.takeWhile { it < 2.0 }.size
 
         val clipped = sample.map { minOf(it, 20.0) }
         val mean = clipped.average()
@@ -159,27 +172,25 @@ class Analyzer {
         }
     }
 
-    private fun calculateNextEntrySignal(): Boolean {
-        if (history.size < 10) return false
+    private fun calculateNextEntrySignal(historyNewestFirst: List<Double>): Boolean {
+        if (historyNewestFirst.size < 10) return false
 
-        val sample = history.takeLast(20)
+        val sample = historyNewestFirst.take(20)
         val under2 = percent(sample) { it < 2.0 }
         val over3 = percent(sample) { it >= 3.0 }
-
-        var lowStreak = 0
-        for (v in history.asReversed()) {
-            if (v < 2.0) lowStreak++ else break
-        }
+        val lowStreak = sample.takeWhile { it < 2.0 }.size
 
         val clipped = sample.map { minOf(it, 20.0) }
         val mean = clipped.average()
-        val variance = if (clipped.size < 2) 0.0 else
+        val variance = if (clipped.size < 2) {
+            0.0
+        } else {
             clipped.sumOf { (it - mean) * (it - mean) } / clipped.size
+        }
         val sd = sqrt(variance)
 
-        // Filtro conservador para a PRÓXIMA rodada:
-        // exige histórico mínimo, evita sequência baixa longa e volatilidade alta.
-        // É um sinal experimental de gestão de risco, não previsão do crash.
+        // Apenas filtro experimental para decidir se o app destaca a próxima rodada.
+        // Não é previsão do multiplicador nem garantia de resultado.
         return under2 <= 50 &&
             over3 >= 20 &&
             lowStreak <= 1 &&
@@ -187,19 +198,15 @@ class Analyzer {
     }
 
     private fun buildResult(live: Double?): Result {
-        val sample = history.takeLast(20)
-        val rounds = history.size
+        val sample = visibleHistory.take(20)
+        val rounds = visibleHistory.size
 
         val under2 = percent(sample) { it < 2.0 }
         val over2 = percent(sample) { it >= 2.0 }
         val over3 = percent(sample) { it >= 3.0 }
         val over5 = percent(sample) { it >= 5.0 }
         val over10 = percent(sample) { it >= 10.0 }
-
-        var lowStreak = 0
-        for (v in history.asReversed()) {
-            if (v < 2.0) lowStreak++ else break
-        }
+        val lowStreak = sample.takeWhile { it < 2.0 }.size
 
         val clipped = sample.map { minOf(it, 20.0) }
         val mean = if (clipped.isEmpty()) 0.0 else clipped.average()
@@ -227,7 +234,7 @@ class Analyzer {
         }
 
         return Result(
-            latest = history.lastOrNull(),
+            latest = visibleHistory.firstOrNull(),
             liveMultiplier = live,
             riskTarget = currentRiskTarget,
             action = action,
