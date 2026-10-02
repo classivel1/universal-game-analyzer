@@ -11,8 +11,9 @@ android {
         applicationId = "com.estilodocampo.gameanalyzer"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.0"
+        val ciRunNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull()
+        versionCode = ciRunNumber ?: 2
+        versionName = if (ciRunNumber != null) "2.$ciRunNumber" else "2.0"
     }
 
     buildTypes {
