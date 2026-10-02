@@ -29,3 +29,14 @@ Abra **Actions > Build Android APK** e baixe o artefato **universal-game-analyze
 
 ## Observação
 As porcentagens e sequências são estatísticas do histórico observado. Elas não garantem nem preveem o multiplicador da próxima rodada.
+
+
+## Limite de risco por rodada
+A versão atual calcula um alvo conservador para a próxima rodada usando apenas o histórico recente da sessão. O alvo fica fixo durante a rodada e pode variar entre 1.30x, 1.40x e 1.50x conforme sequência abaixo de 2x, proporção de resultados abaixo de 2x e volatilidade observada.
+
+Durante o voo, o overlay tenta ler também o multiplicador atual e mostra:
+- **ABAIXO DO LIMITE**
+- **PRÓXIMO DO LIMITE**
+- **SAIR AGORA — LIMITE ATINGIDO**
+
+Esse alvo é uma regra de gestão de risco baseada no histórico observado. Ele não prevê o ponto de crash nem garante que o avião chegará ao alvo.
