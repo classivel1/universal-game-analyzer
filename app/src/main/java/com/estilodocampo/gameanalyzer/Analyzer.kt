@@ -1,161 +1,141 @@
 package com.estilodocampo.gameanalyzer
 
 import android.graphics.Bitmap
-import java.math.BigInteger
-import kotlin.math.max
-import kotlin.math.min
+import com.google.mlkit.vision.common.InputImage
+import com.google.mlkit.vision.text.TextRecognition
+import com.google.mlkit.vision.text.latin.TextRecognizerOptions
+import kotlin.math.sqrt
 
-class Analyzer(profileIndex: Int) {
+class Analyzer {
     data class Result(
-        val label: String,
-        val score: Int,
-        val matches: Int,
-        val rounds: Int
+        val latest: Double,
+        val rounds: Int,
+        val under2Pct: Int,
+        val over2Pct: Int,
+        val over3Pct: Int,
+        val over5Pct: Int,
+        val over10Pct: Int,
+        val lowStreak: Int,
+        val volatility: String,
+        val last20: List<Double>
     )
 
-    data class Profile(
-        val rows: Int,
-        val cols: Int,
-        val x: Double,
-        val y: Double,
-        val w: Double,
-        val h: Double
-    )
+    private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
+    private val history = mutableListOf<Double>()
+    private var busy = false
+    private var lastSnapshot = ""
 
-    private val profile = when (profileIndex) {
-        2 -> Profile(5, 6, .03, .34, .94, .48)
-        1 -> Profile(3, 5, .03, .43, .94, .36)
-        else -> Profile(3, 5, .013, .519, .974, .272)
-    }
-
-    private val history = mutableListOf<List<String>>()
-    private var previous: List<String>? = null
-    private var wasMoving = false
-    private var stableFrames = 0
-
-    fun process(bitmap: Bitmap): Result? {
-        val sig = signature(bitmap)
-        val prev = previous
-
-        if (prev == null) {
-            previous = sig
-            return null
+    fun process(bitmap: Bitmap, onResult: (Result?) -> Unit) {
+        if (busy) {
+            onResult(null)
+            return
         }
 
-        val distance = sigDistance(sig, prev)
-        val moving = distance > 850
+        busy = true
+        val image = InputImage.fromBitmap(bitmap, 0)
+        val minY = (bitmap.height * 0.075).toInt()
+        val maxY = (bitmap.height * 0.155).toInt()
 
-        if (moving) {
-            wasMoving = true
-            stableFrames = 0
-        } else {
-            stableFrames++
-        }
+        recognizer.process(image)
+            .addOnSuccessListener { text ->
+                val values = mutableListOf<Pair<Int, Double>>()
+                val regex = Regex("""(\d{1,3}[\.,]\d{1,2})\s*[xX]""")
 
-        var result: Result? = null
+                for (block in text.textBlocks) {
+                    for (line in block.lines) {
+                        for (element in line.elements) {
+                            val box = element.boundingBox ?: continue
+                            val cy = box.centerY()
+                            if (cy !in minY..maxY) continue
 
-        if (wasMoving && stableFrames >= 2) {
-            history.add(sig)
-            if (history.size > 500) history.removeAt(0)
+                            val match = regex.find(element.text) ?: continue
+                            val raw = match.groupValues[1].replace(',', '.')
+                            val value = raw.toDoubleOrNull() ?: continue
+                            if (value < 1.0 || value > 1000.0) continue
+                            values.add(box.left to value)
+                        }
+                    }
+                }
 
-            val comparisons = history.dropLast(1)
-                .map { sigDistance(sig, it) }
-                .sorted()
+                val ordered = values
+                    .sortedBy { it.first }
+                    .map { it.second }
 
-            val near = comparisons.take(10).count { it <= 1500 }
+                if (ordered.isEmpty()) {
+                    onResult(null)
+                    return@addOnSuccessListener
+                }
 
-            // O estado exibido vale para o PRÓXIMO giro:
-            // - COLETANDO: ainda juntando contexto.
-            // - SEM EVIDÊNCIA: histórico suficiente, mas sem repetição útil agora.
-            // - SINAL EM FORMAÇÃO: contexto atual começa a se repetir.
-            // - SINAL HIPOTÉTICO: repetição visual forte o bastante para ser validada no resultado seguinte.\n            //   É apenas uma hipótese estatística; não é recomendação de aposta nem probabilidade de ganho.
-            val score = min(100, 20 + near * 10 + min(history.size, 20))
+                val snapshot = ordered.joinToString("|") { "%.2f".format(it) }
+                if (snapshot == lastSnapshot) {
+                    onResult(null)
+                    return@addOnSuccessListener
+                }
 
-            val label = when {
-                history.size < 5 -> "COLETANDO"
-                near >= 6 -> "SINAL HIPOTÉTICO"
-                near >= 3 -> "SINAL EM FORMAÇÃO"
-                else -> "SEM EVIDÊNCIA"
+                if (lastSnapshot.isNotEmpty()) {
+                    val newestReadable = ordered.first()
+                    history.add(newestReadable)
+                    if (history.size > 500) history.removeAt(0)
+                }
+
+                lastSnapshot = snapshot
+                onResult(if (history.isEmpty()) null else buildResult())
             }
-
-            result = Result(label, score, near, history.size)
-            wasMoving = false
-            stableFrames = 0
-        }
-
-        previous = sig
-        return result
-    }
-
-    private fun signature(bitmap: Bitmap): List<String> {
-        val gx = (bitmap.width * profile.x).toInt()
-        val gy = (bitmap.height * profile.y).toInt()
-        val gw = (bitmap.width * profile.w).toInt()
-        val gh = (bitmap.height * profile.h).toInt()
-
-        val out = mutableListOf<String>()
-        val cw = gw.toDouble() / profile.cols
-        val ch = gh.toDouble() / profile.rows
-
-        for (r in 0 until profile.rows) {
-            for (c in 0 until profile.cols) {
-                val x = (gx + c * cw + cw * .08).toInt()
-                val y = (gy + r * ch + ch * .08).toInt()
-                val w = max(8, (cw * .84).toInt())
-                val h = max(8, (ch * .84).toInt())
-                out.add(aHash(bitmap, x, y, w, h))
+            .addOnFailureListener {
+                onResult(null)
             }
-        }
-
-        return out
-    }
-
-    private fun aHash(bitmap: Bitmap, x0: Int, y0: Int, w0: Int, h0: Int): String {
-        val x = max(0, min(x0, bitmap.width - 1))
-        val y = max(0, min(y0, bitmap.height - 1))
-        val w = max(1, min(w0, bitmap.width - x))
-        val h = max(1, min(h0, bitmap.height - y))
-
-        val values = IntArray(256)
-        var sum = 0
-
-        for (yy in 0 until 16) {
-            for (xx in 0 until 16) {
-                val px = x + min(w - 1, xx * w / 16)
-                val py = y + min(h - 1, yy * h / 16)
-                val color = bitmap.getPixel(px, py)
-                val lum = (
-                    (color shr 16 and 255) * 299 +
-                    (color shr 8 and 255) * 587 +
-                    (color and 255) * 114
-                ) / 1000
-
-                values[yy * 16 + xx] = lum
-                sum += lum
+            .addOnCompleteListener {
+                busy = false
             }
-        }
-
-        val avg = sum / 256.0
-        var number = BigInteger.ZERO
-
-        for (v in values) {
-            number = number.shiftLeft(1)
-            if (v >= avg) number = number.or(BigInteger.ONE)
-        }
-
-        return number.toString(16).padStart(64, '0')
     }
 
-    private fun sigDistance(a: List<String>, b: List<String>): Int {
-        var total = 0
-        val n = min(a.size, b.size)
+    private fun buildResult(): Result {
+        val sample = history.takeLast(20)
+        val rounds = history.size
+        val under2 = percent(sample) { it < 2.0 }
+        val over2 = percent(sample) { it >= 2.0 }
+        val over3 = percent(sample) { it >= 3.0 }
+        val over5 = percent(sample) { it >= 5.0 }
+        val over10 = percent(sample) { it >= 10.0 }
 
-        for (i in 0 until n) {
-            total += BigInteger(a[i], 16)
-                .xor(BigInteger(b[i], 16))
-                .bitCount()
+        var lowStreak = 0
+        for (v in history.asReversed()) {
+            if (v < 2.0) lowStreak++ else break
         }
 
-        return total
+        val clipped = sample.map { minOf(it, 20.0) }
+        val mean = clipped.average()
+        val variance = if (clipped.size < 2) 0.0 else
+            clipped.sumOf { (it - mean) * (it - mean) } / clipped.size
+        val sd = sqrt(variance)
+
+        val volatility = when {
+            sample.size < 5 -> "COLETANDO"
+            sd >= 5.0 -> "ALTA"
+            sd >= 2.0 -> "MÉDIA"
+            else -> "BAIXA"
+        }
+
+        return Result(
+            latest = history.last(),
+            rounds = rounds,
+            under2Pct = under2,
+            over2Pct = over2,
+            over3Pct = over3,
+            over5Pct = over5,
+            over10Pct = over10,
+            lowStreak = lowStreak,
+            volatility = volatility,
+            last20 = sample
+        )
+    }
+
+    private fun percent(values: List<Double>, predicate: (Double) -> Boolean): Int {
+        if (values.isEmpty()) return 0
+        return ((values.count(predicate) * 100.0) / values.size).toInt()
+    }
+
+    fun close() {
+        recognizer.close()
     }
 }
