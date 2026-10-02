@@ -143,8 +143,8 @@ class CaptureService : Service() {
 
         showOverlay(
             "AVIATOR ANALYZER\n" +
-                "Lendo histórico de multiplicadores…\n" +
-                "Aguarde novas rodadas."
+                "Calculando limite de risco…\n" +
+                "O alvo fica fixo até a próxima rodada."
         )
     }
 
@@ -208,16 +208,19 @@ class CaptureService : Service() {
     }
 
     private fun updateOverlay(result: Analyzer.Result) {
-        val last = "%.2f".format(result.latest)
+        val latest = result.latest?.let { "%.2f".format(it) + "x" } ?: "—"
+        val live = result.liveMultiplier?.let { "%.2f".format(it) + "x" } ?: "—"
+        val target = "%.2f".format(result.riskTarget)
         val sampleSize = result.last20.size
 
         showOverlay(
-            "AVIATOR · HISTÓRICO\n" +
-                "Último lido: ${last}x · Rodadas ${result.rounds}\n" +
+            "AVIATOR · LIMITE DE RISCO\n" +
+                "${result.action}\n" +
+                "Atual: $live · Alvo: ${target}x\n" +
+                "Último resultado: $latest · Rodadas ${result.rounds}\n" +
                 "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}%\n" +
-                "3x+ ${result.over3Pct}% · 5x+ ${result.over5Pct}% · 10x+ ${result.over10Pct}%\n" +
                 "Sequência <2x: ${result.lowStreak} · Volatilidade: ${result.volatility}\n" +
-                "Estatística do histórico; não prevê a próxima rodada."
+                "O alvo é um limite de risco; não prevê o crash."
         )
     }
 
@@ -226,8 +229,7 @@ class CaptureService : Service() {
         manager.notify(
             NOTIF_ID,
             notification(
-                "Rodadas ${result.rounds} · <2x ${result.under2Pct}% · " +
-                    "volatilidade ${result.volatility}"
+                "${result.action} · alvo ${"%.2f".format(result.riskTarget)}x"
             )
         )
     }
