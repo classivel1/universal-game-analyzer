@@ -1,1 +1,16 @@
-<resources><color name="white">#FFFFFF</color></resources>
+<resources>
+    <color name="white">#FFFFFF</color>
+    <color name="screen_bg">#080D18</color>
+    <color name="card_bg">#10172B</color>
+    <color name="card_border">#2B2F67</color>
+    <color name="text_primary">#F7F7FB</color>
+    <color name="text_secondary">#9EA7C0</color>
+    <color name="purple_primary">#9B4DFF</color>
+    <color name="purple_secondary">#6E35FF</color>
+    <color name="purple_soft">#B67CFF</color>
+    <color name="button_secondary">#222A49</color>
+    <color name="status_bg">#0E2A26</color>
+    <color name="status_border">#1E6A58</color>
+    <color name="status_green">#78F0AD</color>
+    <color name="divider">#343B63</color>
+</resources>
