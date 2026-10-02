@@ -20,10 +20,16 @@ class Analyzer {
         val last20: List<Double>
     )
 
+    private data class Candidate(
+        val y: Int,
+        val x: Int,
+        val value: Double
+    )
+
     private val recognizer = TextRecognition.getClient(TextRecognizerOptions.DEFAULT_OPTIONS)
     private val history = mutableListOf<Double>()
     private var busy = false
-    private var lastSnapshot = ""
+    private var lastNewest: Double? = null
 
     fun process(bitmap: Bitmap, onResult: (Result?) -> Unit) {
         if (busy) {
@@ -33,12 +39,17 @@ class Analyzer {
 
         busy = true
         val image = InputImage.fromBitmap(bitmap, 0)
-        val minY = (bitmap.height * 0.075).toInt()
-        val maxY = (bitmap.height * 0.155).toInt()
+
+        // Faixa do histórico do Aviator vista no vídeo/print.
+        // O overlay fica fora desta região para não contaminar o OCR.
+        val minY = (bitmap.height * 0.085).toInt()
+        val maxY = (bitmap.height * 0.40).toInt()
+        val minX = (bitmap.width * 0.02).toInt()
+        val maxX = (bitmap.width * 0.98).toInt()
 
         recognizer.process(image)
             .addOnSuccessListener { text ->
-                val values = mutableListOf<Pair<Int, Double>>()
+                val candidates = mutableListOf<Candidate>()
                 val regex = Regex("""(\d{1,3}[\.,]\d{1,2})\s*[xX]""")
 
                 for (block in text.textBlocks) {
@@ -46,40 +57,57 @@ class Analyzer {
                         for (element in line.elements) {
                             val box = element.boundingBox ?: continue
                             val cy = box.centerY()
-                            if (cy !in minY..maxY) continue
+                            val cx = box.centerX()
+
+                            if (cy !in minY..maxY || cx !in minX..maxX) continue
 
                             val match = regex.find(element.text) ?: continue
                             val raw = match.groupValues[1].replace(',', '.')
                             val value = raw.toDoubleOrNull() ?: continue
+
                             if (value < 1.0 || value > 1000.0) continue
-                            values.add(box.left to value)
+
+                            candidates.add(
+                                Candidate(
+                                    y = box.top,
+                                    x = box.left,
+                                    value = value
+                                )
+                            )
                         }
                     }
                 }
 
-                val ordered = values
-                    .sortedBy { it.first }
-                    .map { it.second }
-
-                if (ordered.isEmpty()) {
+                if (candidates.isEmpty()) {
                     onResult(null)
                     return@addOnSuccessListener
                 }
 
-                val snapshot = ordered.joinToString("|") { "%.2f".format(it) }
-                if (snapshot == lastSnapshot) {
+                // No histórico expandido do Aviator, o resultado mais recente fica
+                // no primeiro item da primeira linha: ordenar por Y e depois por X.
+                val ordered = candidates
+                    .sortedWith(compareBy<Candidate> { it.y }.thenBy { it.x })
+
+                val newestReadable = ordered.first().value
+                val previousNewest = lastNewest
+
+                if (previousNewest == null) {
+                    lastNewest = newestReadable
                     onResult(null)
                     return@addOnSuccessListener
                 }
 
-                if (lastSnapshot.isNotEmpty()) {
-                    val newestReadable = ordered.first()
-                    history.add(newestReadable)
-                    if (history.size > 500) history.removeAt(0)
+                // Só registra nova rodada quando o primeiro multiplicador muda.
+                if (kotlin.math.abs(newestReadable - previousNewest) < 0.005) {
+                    onResult(null)
+                    return@addOnSuccessListener
                 }
 
-                lastSnapshot = snapshot
-                onResult(if (history.isEmpty()) null else buildResult())
+                lastNewest = newestReadable
+                history.add(newestReadable)
+                if (history.size > 500) history.removeAt(0)
+
+                onResult(buildResult())
             }
             .addOnFailureListener {
                 onResult(null)
@@ -105,8 +133,11 @@ class Analyzer {
 
         val clipped = sample.map { minOf(it, 20.0) }
         val mean = clipped.average()
-        val variance = if (clipped.size < 2) 0.0 else
+        val variance = if (clipped.size < 2) {
+            0.0
+        } else {
             clipped.sumOf { (it - mean) * (it - mean) } / clipped.size
+        }
         val sd = sqrt(variance)
 
         val volatility = when {
