@@ -189,10 +189,11 @@ class Analyzer {
         }
 
         val action = when {
-            live == null -> "ALVO DEFINIDO"
-            live >= currentRiskTarget -> "SAIR AGORA — LIMITE ATINGIDO"
-            live >= currentRiskTarget - 0.10 -> "PRÓXIMO DO LIMITE"
-            else -> "ABAIXO DO LIMITE"
+            live == null && rounds >= 5 -> "ENTRAR AGORA"
+            live == null -> "COLETANDO"
+            live >= currentRiskTarget -> "SAIR AGORA"
+            live >= currentRiskTarget - 0.10 -> "PREPARE-SE PARA SAIR"
+            else -> "MANTER"
         }
 
         return Result(
