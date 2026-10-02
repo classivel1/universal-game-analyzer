@@ -33,7 +33,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:layout_marginStart="7dp"
-                android:text="Analyzer"
+                android:text="Decoder"
                 android:textColor="@color/purple_soft"
                 android:textSize="31sp"
                 android:textStyle="bold" />
@@ -44,7 +44,7 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="7dp"
             android:lineSpacingExtra="2dp"
-            android:text="Lê o histórico de multiplicadores do Aviator e calcula estatísticas em tempo real."
+            android:text="Decodifica contextos do histórico, faz backtest e destaca sinais experimentais para a próxima rodada."
             android:textColor="@color/text_secondary"
             android:textSize="15sp" />
 
@@ -95,7 +95,7 @@
             <TextView
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:text="Modo de leitura"
+                android:text="Modo do decodificador"
                 android:textColor="@color/text_primary"
                 android:textSize="19sp"
                 android:textStyle="bold" />
@@ -104,7 +104,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:layout_marginTop="4dp"
-                android:text="Selecione o modo de leitura do jogo."
+                android:text="O histórico é comparado com contextos anteriores semelhantes."
                 android:textColor="@color/text_secondary"
                 android:textSize="14sp" />
 
