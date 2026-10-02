@@ -199,6 +199,14 @@ class Analyzer(context: Context) {
             }
     }
 
+    private fun finish(
+        onResult: (Result?) -> Unit,
+        result: Result?
+    ) {
+        busy = false
+        onResult(result)
+    }
+
     private fun recoverFirstCell(
         bitmap: Bitmap,
         rowY: Int,
