@@ -72,7 +72,7 @@ class CaptureService : Service() {
         if (data == null) return
 
         analyzer?.close()
-        analyzer = Analyzer()
+        analyzer = Analyzer(applicationContext)
 
         val manager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         projection = manager.getMediaProjection(resultCode, data)
@@ -142,9 +142,9 @@ class CaptureService : Service() {
         }, android.os.Handler(mainLooper))
 
         showOverlay(
-            "AVIATOR ANALYZER\n" +
-                "Calculando limite de risco…\n" +
-                "O alvo fica fixo até a próxima rodada."
+            "AVIATOR · DECODIFICADOR\n" +
+                "Lendo e comparando padrões históricos…\n" +
+                "Aguarde o histórico ser decodificado."
         )
     }
 
@@ -213,13 +213,14 @@ class CaptureService : Service() {
         val sampleSize = result.last20.size
 
         showOverlay(
-            "AVIATOR · LIMITE DE RISCO\n" +
+            "AVIATOR · DECODIFICADOR DE SINAL\n" +
                 "${result.action}\n" +
-                "Atual: $live · Alvo: ${target}x\n" +
-                "Último resultado: $latest · Rodadas ${result.rounds}\n" +
-                "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}%\n" +
-                "Sequência <2x: ${result.lowStreak} · Volatilidade: ${result.volatility}\n" +
-                "O alvo é um limite de risco; não prevê o crash."
+                "Alvo: ${target}x · Qualidade ${result.decoderQuality}/100\n" +
+                "Contextos: ${result.decoderMatches} · Acerto hist. ${result.decoderHitRate}%\n" +
+                "Base: ${result.decoderBaseline}% · Diferença: ${if (result.decoderLift >= 0) "+" else ""}${result.decoderLift} p.p.\n" +
+                "Último: $latest · Histórico ${result.rounds}\n" +
+                "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}% · Seq. <2x ${result.lowStreak}\n" +
+                "Sinal experimental por backtest; não prevê o crash."
         )
     }
 
@@ -228,7 +229,7 @@ class CaptureService : Service() {
         manager.notify(
             NOTIF_ID,
             notification(
-                "${result.action} · alvo ${"%.2f".format(result.riskTarget)}x"
+                "${result.action} · sinal ${result.decoderQuality}/100 · alvo ${"%.2f".format(result.riskTarget)}x"
             )
         )
     }
