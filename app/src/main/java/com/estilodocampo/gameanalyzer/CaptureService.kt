@@ -207,8 +207,18 @@ class CaptureService : Service() {
     }
 
     private fun updateOverlay(result: Analyzer.Result) {
+        if (!result.historyComplete) {
+            showOverlay(
+                "AVIATOR · DECODIFICADOR DE SINAL\n" +
+                    "LEITURA PARCIAL — AGUARDE\n" +
+                    "O primeiro multiplicador ainda não foi confirmado.\n" +
+                    "Estatísticas e sinais estão BLOQUEADOS para evitar dados errados.\n" +
+                    "Resultados reconhecidos: ${result.rounds}"
+            )
+            return
+        }
+
         val latest = result.latest?.let { "%.2f".format(it) + "x" } ?: "—"
-        val live = result.liveMultiplier?.let { "%.2f".format(it) + "x" } ?: "—"
         val target = "%.2f".format(result.riskTarget)
         val sampleSize = result.last20.size
 
@@ -220,7 +230,7 @@ class CaptureService : Service() {
                 "Base: ${result.decoderBaseline}% · Diferença: ${if (result.decoderLift >= 0) "+" else ""}${result.decoderLift} p.p.\n" +
                 "Último: $latest · Histórico ${result.rounds}\n" +
                 "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}% · Seq. <2x ${result.lowStreak}\n" +
-                "Sinal experimental por backtest; não prevê o crash."
+                "Backtest histórico experimental; não prevê o crash."
         )
     }
 
