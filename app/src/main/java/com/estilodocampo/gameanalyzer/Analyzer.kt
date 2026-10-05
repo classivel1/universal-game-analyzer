@@ -503,14 +503,15 @@ class Analyzer(context: Context) {
                     quality * 0.08
 
             val state = when {
+                selected.size >= 12 &&
+                    lift >= 10 &&
+                    lower >= breakEven - 0.02 &&
+                    quality >= 68 -> "SINAL FORTE"
+
                 selected.size >= 10 &&
                     lift >= 7 &&
-                    lower >= breakEven - 0.03 &&
-                    quality >= 62 -> "SINAL FORTE"
-
-                selected.size >= 8 &&
-                    lift >= 4 &&
-                    quality >= 50 -> "SINAL MODERADO"
+                    lower >= breakEven - 0.05 &&
+                    quality >= 60 -> "SINAL MODERADO"
 
                 else -> "SEM SINAL"
             }
@@ -676,7 +677,7 @@ class Analyzer(context: Context) {
                 "ENTRADA EXPERIMENTAL — PRÓXIMA"
 
             decoderSignal.state == "SINAL MODERADO" ->
-                "SINAL EM FORMAÇÃO"
+                "AGUARDE — SINAL EM FORMAÇÃO"
 
             decoderSignal.state == "DECODIFICANDO" ->
                 "DECODIFICANDO HISTÓRICO"
