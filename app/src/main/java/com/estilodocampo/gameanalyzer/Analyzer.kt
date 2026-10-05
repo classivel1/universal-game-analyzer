@@ -73,6 +73,7 @@ class Analyzer(context: Context) {
     private var lastSnapshotKey = ""
     private var currentRiskTarget = 1.30
     private var historyComplete = false
+    private var persistentAligned = false
     private var decoderSignal = DecoderSignal(
         state = "DECODIFICANDO",
         target = 1.30,
@@ -226,27 +227,22 @@ class Analyzer(context: Context) {
 
         val crop = Bitmap.createBitmap(bitmap, x, y, w, h)
         val looksLowBlue = containsLowMultiplierBlue(crop)
+        val filtered = keepMultiplierColorsOnly(crop)
 
         val scaled = Bitmap.createScaledBitmap(
-            crop,
-            crop.width * 4,
-            crop.height * 4,
+            filtered,
+            filtered.width * 5,
+            filtered.height * 5,
             true
         )
+
         crop.recycle()
+        filtered.recycle()
 
         firstCellRecognizer.process(InputImage.fromBitmap(scaled, 0))
             .addOnSuccessListener { text ->
-                val values = regex.findAll(text.text)
-                    .mapNotNull { match ->
-                        match.groupValues[1]
-                            .replace(',', '.')
-                            .toDoubleOrNull()
-                    }
-                    .filter { it in 1.0..1000.0 }
-                    .toList()
+                val direct = extractMultiplier(text.text, regex)
 
-                val direct = values.firstOrNull()
                 if (direct != null) {
                     callback(direct)
                     return@addOnSuccessListener
@@ -275,6 +271,58 @@ class Analyzer(context: Context) {
             .addOnCompleteListener {
                 scaled.recycle()
             }
+    }
+
+    private fun extractMultiplier(
+        text: String,
+        regex: Regex
+    ): Double? {
+        return regex.findAll(text)
+            .mapNotNull { match ->
+                match.groupValues[1]
+                    .replace(',', '.')
+                    .toDoubleOrNull()
+            }
+            .firstOrNull { it in 1.0..1000.0 }
+    }
+
+    private fun keepMultiplierColorsOnly(bitmap: Bitmap): Bitmap {
+        val out = Bitmap.createBitmap(
+            bitmap.width,
+            bitmap.height,
+            Bitmap.Config.ARGB_8888
+        )
+
+        val hsv = FloatArray(3)
+
+        for (y in 0 until bitmap.height) {
+            for (x in 0 until bitmap.width) {
+                val pixel = bitmap.getPixel(x, y)
+                Color.colorToHSV(pixel, hsv)
+
+                val hue = hsv[0]
+                val saturation = hsv[1]
+                val value = hsv[2]
+
+                val isBlue =
+                    hue in 175f..230f &&
+                        saturation >= 0.25f &&
+                        value >= 0.25f
+
+                val isPurple =
+                    hue in 250f..345f &&
+                        saturation >= 0.25f &&
+                        value >= 0.25f
+
+                out.setPixel(
+                    x,
+                    y,
+                    if (isBlue || isPurple) Color.WHITE else Color.BLACK
+                )
+            }
+        }
+
+        return out
     }
 
     private fun containsLowMultiplierBlue(bitmap: Bitmap): Boolean {
@@ -324,9 +372,22 @@ class Analyzer(context: Context) {
         visibleHistory = values
         lastSnapshotKey = snapshotKey
 
-        if (complete) {
-            mergePersistentHistory(values)
+        if (!complete) {
+            persistentAligned = false
+            decoderSignal = DecoderSignal(
+                state = "LEITURA PARCIAL",
+                target = 1.30,
+                matches = 0,
+                hitRate = 0,
+                baseline = 0,
+                lift = 0,
+                quality = 0
+            )
+            currentRiskTarget = calculateRiskTarget(visibleHistory)
+            return
         }
+
+        mergePersistentHistory(values)
 
         val history = analysisHistory()
         decoderSignal = decodeSignal(history)
@@ -343,50 +404,69 @@ class Analyzer(context: Context) {
 
         if (persistentHistory.isEmpty()) {
             persistentHistory.addAll(snapshot.take(120))
+            persistentAligned = true
             savePersistentHistory()
             return
         }
 
-        val maxSearch = minOf(12, snapshot.size)
+        val maxSearch = minOf(16, snapshot.size)
         var overlapStart = -1
 
         for (i in 0 until maxSearch) {
             if (!near(snapshot[i], persistentHistory[0])) continue
 
-            var verified = 0
             val verifyCount =
-                minOf(4, snapshot.size - i, persistentHistory.size)
+                minOf(5, snapshot.size - i, persistentHistory.size)
 
+            if (verifyCount < 3) continue
+
+            var verified = 0
             for (j in 0 until verifyCount) {
                 if (near(snapshot[i + j], persistentHistory[j])) {
                     verified++
                 }
             }
 
-            if (verified >= minOf(3, verifyCount)) {
+            if (verified >= 3) {
                 overlapStart = i
                 break
             }
         }
 
-        if (overlapStart == 0) return
+        when {
+            overlapStart == 0 -> {
+                persistentAligned = true
+            }
 
-        if (overlapStart > 0) {
-            val merged =
-                snapshot.take(overlapStart) + persistentHistory
+            overlapStart > 0 -> {
+                val merged =
+                    snapshot.take(overlapStart) + persistentHistory
 
-            persistentHistory.clear()
-            persistentHistory.addAll(merged.take(1000))
-            savePersistentHistory()
-            return
+                persistentHistory.clear()
+                persistentHistory.addAll(merged.take(1000))
+                persistentAligned = true
+                savePersistentHistory()
+            }
+
+            else -> {
+                // O histórico salvo não pertence mais à grade atual (sessão nova,
+                // OCR antigo incorreto ou longo intervalo sem observar o jogo).
+                // A tela atual passa a ser a fonte de verdade; nunca misturamos
+                // estatísticas antigas desalinhadas com a leitura atual.
+                persistentHistory.clear()
+                persistentHistory.addAll(snapshot.take(1000))
+                persistentAligned = true
+                savePersistentHistory()
+            }
         }
-
-        // Se não há sobreposição verificável, não misturamos séries diferentes.
-        // Mantemos o histórico persistido e usamos a grade visível apenas para OCR.
     }
 
     private fun analysisHistory(): List<Double> {
-        return if (persistentHistory.size >= visibleHistory.size) {
+        if (!historyComplete || !persistentAligned) {
+            return visibleHistory
+        }
+
+        return if (persistentHistory.isNotEmpty()) {
             persistentHistory
         } else {
             visibleHistory
