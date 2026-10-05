@@ -222,15 +222,31 @@ class CaptureService : Service() {
         val target = "%.2f".format(result.riskTarget)
         val sampleSize = result.last20.size
 
+        val previewText =
+            if (
+                result.previewLow != null &&
+                result.previewMedian != null &&
+                result.previewHigh != null &&
+                result.previewSample >= 6
+            ) {
+                "Prévia hist.: " +
+                    "${"%.2f".format(result.previewLow)}x–" +
+                    "${"%.2f".format(result.previewHigh)}x " +
+                    "· mediana ${"%.2f".format(result.previewMedian)}x"
+            } else {
+                "Prévia hist.: amostra insuficiente"
+            }
+
         showOverlay(
             "AVIATOR · DECODIFICADOR DE SINAL\n" +
                 "${result.action}\n" +
+                "$previewText\n" +
                 "Alvo: ${target}x · Qualidade ${result.decoderQuality}/100\n" +
                 "Contextos: ${result.decoderMatches} · Acerto hist. ${result.decoderHitRate}%\n" +
                 "Base: ${result.decoderBaseline}% · Diferença: ${if (result.decoderLift >= 0) "+" else ""}${result.decoderLift} p.p.\n" +
                 "Último: $latest · Histórico ${result.rounds}\n" +
                 "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}% · Seq. <2x ${result.lowStreak}\n" +
-                "Backtest histórico experimental; não prevê o crash."
+                "A prévia é faixa histórica após contextos similares; não prevê o crash real."
         )
     }
 
