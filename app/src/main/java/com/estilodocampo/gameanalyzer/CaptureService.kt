@@ -8,11 +8,15 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
+import android.media.AudioManager
 import android.media.ImageReader
+import android.media.ToneGenerator
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
 import android.os.IBinder
+import android.os.VibrationEffect
+import android.os.Vibrator
 import android.provider.Settings
 import android.view.Gravity
 import android.view.MotionEvent
@@ -39,10 +43,13 @@ class CaptureService : Service() {
     private var overlay: TextView? = null
     private var windowManager: WindowManager? = null
     private var lastFrame = 0L
+    private var lastSignalAlert = ""
+    private var toneGenerator: ToneGenerator? = null
 
     override fun onCreate() {
         super.onCreate()
         createChannel()
+        toneGenerator = ToneGenerator(AudioManager.STREAM_NOTIFICATION, 90)
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -132,6 +139,7 @@ class CaptureService : Service() {
                     if (result != null) {
                         updateOverlay(result)
                         updateNotification(result)
+                        handleSignalAlert(result)
                     }
                     runCatching { cropped.recycle() }
                     runCatching { bitmap.recycle() }
@@ -218,6 +226,8 @@ class CaptureService : Service() {
             return
         }
 
+        overlay?.setTextColor(android.graphics.Color.WHITE)
+
         val latest = result.latest?.let { "%.2f".format(it) + "x" } ?: "—"
         val target = "%.2f".format(result.riskTarget)
         val sampleSize = result.last20.size
@@ -248,6 +258,63 @@ class CaptureService : Service() {
                 "Últ. $sampleSize: <2x ${result.under2Pct}% · 2x+ ${result.over2Pct}% · Seq. <2x ${result.lowStreak}\n" +
                 "A prévia é faixa histórica após contextos similares; não prevê o crash real."
         )
+    }
+
+    private fun handleSignalAlert(result: Analyzer.Result) {
+        if (!result.historyComplete) {
+            lastSignalAlert = ""
+            return
+        }
+
+        val state = when {
+            result.action.startsWith("ENTRAR AGORA") -> "ENTRY"
+            result.action.startsWith("SAIR AGORA") -> "EXIT"
+            result.action.startsWith("ATENÇÃO") -> "WARNING"
+            else -> ""
+        }
+
+        if (state.isEmpty()) {
+            lastSignalAlert = ""
+            return
+        }
+
+        if (state == lastSignalAlert) return
+        lastSignalAlert = state
+
+        when (state) {
+            "ENTRY" -> {
+                toneGenerator?.startTone(ToneGenerator.TONE_PROP_ACK, 300)
+                vibrate(longArrayOf(0, 180, 100, 180))
+                overlay?.setTextColor(android.graphics.Color.rgb(120, 255, 170))
+            }
+
+            "WARNING" -> {
+                toneGenerator?.startTone(ToneGenerator.TONE_PROP_BEEP, 220)
+                vibrate(longArrayOf(0, 120))
+                overlay?.setTextColor(android.graphics.Color.rgb(255, 215, 90))
+            }
+
+            "EXIT" -> {
+                toneGenerator?.startTone(ToneGenerator.TONE_PROP_NACK, 450)
+                vibrate(longArrayOf(0, 260, 90, 260, 90, 260))
+                overlay?.setTextColor(android.graphics.Color.rgb(255, 90, 90))
+            }
+        }
+    }
+
+    private fun vibrate(pattern: LongArray) {
+        val vibrator = getSystemService(VIBRATOR_SERVICE) as Vibrator
+
+        if (!vibrator.hasVibrator()) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            vibrator.vibrate(
+                VibrationEffect.createWaveform(pattern, -1)
+            )
+        } else {
+            @Suppress("DEPRECATION")
+            vibrator.vibrate(pattern, -1)
+        }
     }
 
     private fun updateNotification(result: Analyzer.Result) {
@@ -287,6 +354,8 @@ class CaptureService : Service() {
         virtualDisplay?.release()
         projection?.stop()
         analyzer?.close()
+        toneGenerator?.release()
+        toneGenerator = null
 
         overlay?.let {
             runCatching { windowManager?.removeView(it) }
