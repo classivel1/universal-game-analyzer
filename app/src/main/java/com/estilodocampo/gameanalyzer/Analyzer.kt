@@ -34,7 +34,11 @@ class Analyzer(context: Context) {
         val decoderHitRate: Int,
         val decoderBaseline: Int,
         val decoderLift: Int,
-        val decoderQuality: Int
+        val decoderQuality: Int,
+        val previewLow: Double?,
+        val previewMedian: Double?,
+        val previewHigh: Double?,
+        val previewSample: Int
     )
 
     private data class HistoryLine(
@@ -56,7 +60,11 @@ class Analyzer(context: Context) {
         val hitRate: Int,
         val baseline: Int,
         val lift: Int,
-        val quality: Int
+        val quality: Int,
+        val previewLow: Double?,
+        val previewMedian: Double?,
+        val previewHigh: Double?,
+        val previewSample: Int
     )
 
     private val recognizer =
@@ -81,7 +89,11 @@ class Analyzer(context: Context) {
         hitRate = 0,
         baseline = 0,
         lift = 0,
-        quality = 0
+        quality = 0,
+        previewLow = null,
+        previewMedian = null,
+        previewHigh = null,
+        previewSample = 0
     )
 
     init {
@@ -381,7 +393,11 @@ class Analyzer(context: Context) {
                 hitRate = 0,
                 baseline = 0,
                 lift = 0,
-                quality = 0
+                quality = 0,
+                previewLow = null,
+                previewMedian = null,
+                previewHigh = null,
+                previewSample = 0
             )
             currentRiskTarget = calculateRiskTarget(visibleHistory)
             return
@@ -506,7 +522,11 @@ class Analyzer(context: Context) {
                 hitRate = 0,
                 baseline = 0,
                 lift = 0,
-                quality = minOf(45, historyNewestFirst.size)
+                quality = minOf(45, historyNewestFirst.size),
+                previewLow = null,
+                previewMedian = null,
+                previewHigh = null,
+                previewSample = 0
             )
         }
 
@@ -535,6 +555,17 @@ class Analyzer(context: Context) {
             .sortedBy { it.distance }
             .take(18)
 
+        val previewValues = selected
+            .map { minOf(it.nextOutcome, 20.0) }
+            .sorted()
+
+        val previewLow =
+            if (previewValues.size >= 6) quantile(previewValues, 0.25) else null
+        val previewMedian =
+            if (previewValues.size >= 6) quantile(previewValues, 0.50) else null
+        val previewHigh =
+            if (previewValues.size >= 6) quantile(previewValues, 0.75) else null
+
         if (selected.size < 6) {
             return DecoderSignal(
                 state = "SEM SINAL",
@@ -543,7 +574,11 @@ class Analyzer(context: Context) {
                 hitRate = 0,
                 baseline = 0,
                 lift = 0,
-                quality = minOf(55, selected.size * 8)
+                quality = minOf(55, selected.size * 8),
+                previewLow = previewLow,
+                previewMedian = previewMedian,
+                previewHigh = previewHigh,
+                previewSample = selected.size
             )
         }
 
@@ -603,7 +638,11 @@ class Analyzer(context: Context) {
                 hitRate = hitRate,
                 baseline = baseline,
                 lift = lift,
-                quality = quality
+                quality = quality,
+                previewLow = previewLow,
+                previewMedian = previewMedian,
+                previewHigh = previewHigh,
+                previewSample = selected.size
             )
 
             if (
@@ -625,8 +664,28 @@ class Analyzer(context: Context) {
             hitRate = 0,
             baseline = 0,
             lift = 0,
-            quality = 0
+            quality = 0,
+            previewLow = previewLow,
+            previewMedian = previewMedian,
+            previewHigh = previewHigh,
+            previewSample = selected.size
         )
+    }
+
+    private fun quantile(
+        sortedValues: List<Double>,
+        q: Double
+    ): Double {
+        if (sortedValues.isEmpty()) return 0.0
+        if (sortedValues.size == 1) return sortedValues[0]
+
+        val position = (sortedValues.size - 1) * q
+        val lower = position.toInt()
+        val upper = minOf(lower + 1, sortedValues.lastIndex)
+        val fraction = position - lower
+
+        return sortedValues[lower] * (1.0 - fraction) +
+            sortedValues[upper] * fraction
     }
 
     private fun contextDistance(
@@ -787,7 +846,11 @@ class Analyzer(context: Context) {
             decoderHitRate = decoderSignal.hitRate,
             decoderBaseline = decoderSignal.baseline,
             decoderLift = decoderSignal.lift,
-            decoderQuality = decoderSignal.quality
+            decoderQuality = decoderSignal.quality,
+            previewLow = decoderSignal.previewLow,
+            previewMedian = decoderSignal.previewMedian,
+            previewHigh = decoderSignal.previewHigh,
+            previewSample = decoderSignal.previewSample
         )
     }
 
