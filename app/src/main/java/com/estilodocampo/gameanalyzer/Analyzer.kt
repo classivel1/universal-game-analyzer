@@ -804,16 +804,16 @@ class Analyzer(context: Context) {
             !historyComplete -> "LEITURA PARCIAL — AGUARDE"
 
             live != null && live >= currentRiskTarget ->
-                "SAIR AGORA"
+                "SAIR AGORA — LIMITE DE RISCO"
 
             live != null && live >= currentRiskTarget - 0.10 ->
-                "PREPARE-SE PARA SAIR"
+                "ATENÇÃO — PREPARE-SE PARA SAIR"
 
             live != null ->
                 "MANTER"
 
             decoderSignal.state == "SINAL FORTE" ->
-                "ENTRADA EXPERIMENTAL — PRÓXIMA"
+                "ENTRAR AGORA — PRÓXIMA RODADA"
 
             decoderSignal.state == "SINAL MODERADO" ->
                 "AGUARDE — SINAL EM FORMAÇÃO"
